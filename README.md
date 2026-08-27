@@ -8,21 +8,22 @@ explanations, and editable Excalidraw drawings.
 ## Build
 
 The generated web application is embedded in the Rust binary. Rebuild it after
-changing anything under `web/src`:
+changing anything under `documenter/web/src`:
 
 ```sh
-npm --prefix web ci
-npm --prefix web run build
+npm --prefix documenter/web ci
+npm --prefix documenter/web run build
 cargo build
 ```
 
 Run the checks with:
 
 ```sh
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
-npm --prefix web test
-npm --prefix web audit --omit=dev
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build -p documenter-zed --target wasm32-wasip2
+npm --prefix documenter/web test
+npm --prefix documenter/web audit --omit=dev
 ```
 
 ## Editor setup
@@ -38,6 +39,19 @@ The editor supplies the workspace root through LSP. `documenter lsp --root
 **Open documentation workspace** code action from a Rust file; the server starts
 on a random `127.0.0.1` port and opens the authenticated URL in the default
 browser.
+
+### Zed
+
+Install the native language server, then install the adapter in
+`documenter-zed` as a Zed dev extension:
+
+```sh
+cargo install --path documenter --locked --force
+```
+
+In Zed, run **zed: install dev extension** and select the `documenter-zed`
+directory. Open a Rust file and invoke **Open documentation workspace** from the
+code actions menu (`Cmd+.` on macOS or `Ctrl+.` on Windows/Linux).
 
 ## Documentation layout
 

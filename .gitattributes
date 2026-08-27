@@ -1,1 +1,1 @@
-web/dist/** -diff -whitespace
+documenter/web/dist/** -diff -whitespace

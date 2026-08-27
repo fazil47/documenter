@@ -1,0 +1,10 @@
+id = "documenter-lsp"
+name = "Documenter LSP"
+version = "0.1.0"
+schema_version = 1
+authors = ["Fazil Babu <fazil47babu@gmail.com>"]
+description = "Documentation-centric Rust workspace browser"
+
+[language_servers.documenter]
+name = "Documenter"
+languages = ["Rust"]
