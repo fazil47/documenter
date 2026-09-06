@@ -3,6 +3,7 @@
 mod cargo;
 mod cfg;
 mod rust;
+mod settings;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,13 +27,17 @@ struct Module {
     name: String,
     docs: String,
     file_backed: bool,
-    explanations: Vec<Explanation>,
+    folded: bool,
+    explanations: Vec<MarkdownFile>,
+    explorations: Vec<MarkdownFile>,
     #[serde(skip)]
     explanation_dir: Option<PathBuf>,
+    #[serde(skip)]
+    exploration_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct Explanation {
+struct MarkdownFile {
     filename: String,
     title: String,
 }
@@ -56,7 +61,11 @@ impl Workspace {
         let root = cargo::find_root(start)?;
         let packages = cargo::discover_packages(&root)?;
         let cfg = cfg::CfgSet::for_target(None)?;
-        let analysis = rust::analyze(&packages, &cfg, documents)?;
+        let settings = settings::Settings::load(&root)?;
+        let mut analysis = rust::analyze(&packages, &cfg, documents)?;
+        for module in &mut analysis.modules {
+            module.folded = module.id.contains("::") && settings.folds(&module.name);
+        }
         Ok(Self {
             root,
             modules: analysis.modules,
@@ -74,13 +83,11 @@ impl Workspace {
     }
 
     pub(crate) fn explanation_path(&self, module_id: &str, filename: &str) -> Option<PathBuf> {
-        if !valid_markdown_filename(filename) {
-            return None;
-        }
-        self.module(module_id)?
-            .explanation_dir
-            .as_ref()
-            .map(|directory| directory.join(filename))
+        self.markdown_path(module_id, filename, |module| &module.explanation_dir)
+    }
+
+    pub(crate) fn exploration_path(&self, module_id: &str, filename: &str) -> Option<PathBuf> {
+        self.markdown_path(module_id, filename, |module| &module.exploration_dir)
     }
 
     pub(crate) fn drawing_dir(&self, module_id: &str) -> Option<PathBuf> {
@@ -90,6 +97,20 @@ impl Workspace {
             path.push(segment);
         }
         Some(path)
+    }
+
+    fn markdown_path<'a>(
+        &'a self,
+        module_id: &str,
+        filename: &str,
+        directory: impl FnOnce(&'a Module) -> &'a Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        if !valid_markdown_filename(filename) {
+            return None;
+        }
+        directory(self.module(module_id)?)
+            .as_ref()
+            .map(|directory| directory.join(filename))
     }
 }
 
@@ -103,10 +124,14 @@ fn valid_markdown_filename(filename: &str) -> bool {
         && path.file_stem().is_some_and(|stem| !stem.is_empty())
 }
 
-fn explanation_title(path: &Path) -> Result<String> {
+fn markdown_file_title(path: &Path) -> Result<String> {
     let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading explanation {}", path.display()))?;
-    Ok(text
+        .with_context(|| format!("reading Markdown document {}", path.display()))?;
+    Ok(markdown_title(&text, path))
+}
+
+pub(crate) fn markdown_title(content: &str, path: &Path) -> String {
+    content
         .lines()
         .find_map(|line| line.strip_prefix("# ").map(str::trim))
         .filter(|title| !title.is_empty())
@@ -116,7 +141,7 @@ fn explanation_title(path: &Path) -> Result<String> {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or("Untitled")
                 .to_owned()
-        }))
+        })
 }
 
 #[cfg(test)]
@@ -128,7 +153,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn discovers_file_and_inline_modules_with_explanations() {
+    fn discovers_file_and_inline_modules_with_markdown_documents() {
         let temp = tempdir().unwrap();
         fs::write(
             temp.path().join("Cargo.toml"),
@@ -136,6 +161,7 @@ mod tests {
         )
         .unwrap();
         fs::create_dir_all(temp.path().join("src/engine/explanations")).unwrap();
+        fs::create_dir_all(temp.path().join("src/engine/explorations")).unwrap();
         fs::write(
             temp.path().join("src/lib.rs"),
             "//! Crate docs.\nmod engine;\nmod inline { use crate::engine; }\n",
@@ -151,6 +177,11 @@ mod tests {
             "# Frame Loop\n\nDetails.\n",
         )
         .unwrap();
+        fs::write(
+            temp.path().join("src/engine/explorations/async_loop.md"),
+            "# Async Loop Ideas\n\nRough notes.\n",
+        )
+        .unwrap();
 
         let workspace = Workspace::load(temp.path()).unwrap();
         let root = workspace.module("sample_app").unwrap();
@@ -161,7 +192,55 @@ mod tests {
         assert!(engine.file_backed);
         assert_eq!(engine.docs, "Engine docs.");
         assert_eq!(engine.explanations[0].title, "Frame Loop");
+        assert_eq!(engine.explorations[0].title, "Async Loop Ideas");
         assert!(!inline.file_backed);
         assert!(inline.explanation_dir.is_none());
+        assert!(inline.exploration_dir.is_none());
+    }
+
+    #[test]
+    fn marks_configured_terminal_module_names_as_folded() {
+        let temp = tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("src/render_api")).unwrap();
+        fs::create_dir_all(temp.path().join(".documenter")).unwrap();
+        fs::write(
+            temp.path().join(".documenter/config.toml"),
+            "[module_graph]\nfold = [\"interface\", \"internal\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("src/lib.rs"),
+            "mod internal;\nmod render_api;\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("src/internal.rs"), "").unwrap();
+        fs::write(
+            temp.path().join("src/render_api.rs"),
+            "mod interface;\nmod internal_tools;\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("src/render_api/interface.rs"), "").unwrap();
+        fs::write(temp.path().join("src/render_api/internal_tools.rs"), "").unwrap();
+
+        let workspace = Workspace::load(temp.path()).unwrap();
+        assert!(workspace.module("sample::internal").unwrap().folded);
+        assert!(
+            workspace
+                .module("sample::render_api::interface")
+                .unwrap()
+                .folded
+        );
+        assert!(!workspace.module("sample::render_api").unwrap().folded);
+        assert!(
+            !workspace
+                .module("sample::render_api::internal_tools")
+                .unwrap()
+                .folded
+        );
     }
 }

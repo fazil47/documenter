@@ -28,7 +28,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
 use self::storage::atomic_write;
-use crate::analysis::Workspace;
+use crate::analysis::{Workspace, markdown_title};
 use crate::drawing::{
     create_empty_drawing_svg, extract_scene_from_svg, has_embedded_scene,
     has_opaque_white_background, merge_export_svg_with_scene,
@@ -266,6 +266,11 @@ fn router(state: Arc<AppState>) -> Router {
             get(get_explanation).put(put_explanation),
         )
         .route("/api/explanations", post(create_explanation))
+        .route(
+            "/api/exploration",
+            get(get_exploration).put(put_exploration),
+        )
+        .route("/api/explorations", post(create_exploration))
         .route("/api/drawing", get(get_drawing).put(put_drawing))
         .route("/api/drawings", post(create_drawing))
         .route("/api/drawing-file", get(get_drawing_file))
@@ -322,7 +327,7 @@ async fn events(
 }
 
 #[derive(Serialize)]
-struct ExplanationResponse {
+struct MarkdownResponse {
     module: String,
     filename: String,
     title: String,
@@ -333,13 +338,28 @@ struct ExplanationResponse {
 async fn get_explanation(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ResourceQuery>,
-) -> ApiResult<Json<ExplanationResponse>> {
+) -> ApiResult<Json<MarkdownResponse>> {
+    get_markdown(state, query, MarkdownKind::Explanation).await
+}
+
+async fn get_exploration(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ResourceQuery>,
+) -> ApiResult<Json<MarkdownResponse>> {
+    get_markdown(state, query, MarkdownKind::Exploration).await
+}
+
+async fn get_markdown(
+    state: Arc<AppState>,
+    query: ResourceQuery,
+    kind: MarkdownKind,
+) -> ApiResult<Json<MarkdownResponse>> {
     state.authorize(&query.token)?;
-    let path = explanation_path(&state, &query.module, &query.file).await?;
+    let path = markdown_path(&state, kind, &query.module, &query.file).await?;
     ensure_safe_existing_file(&state.root, &path)?;
     let content = std::fs::read_to_string(&path)
-        .map_err(|error| ApiError::io("reading explanation", error))?;
-    Ok(Json(ExplanationResponse {
+        .map_err(|error| ApiError::io(&format!("reading {}", kind.name()), error))?;
+    Ok(Json(MarkdownResponse {
         module: query.module,
         filename: query.file,
         title: markdown_title(&content, &path),
@@ -349,7 +369,7 @@ async fn get_explanation(
 }
 
 #[derive(Debug, Deserialize)]
-struct SaveExplanation {
+struct SaveMarkdown {
     content: String,
     revision: String,
 }
@@ -357,26 +377,43 @@ struct SaveExplanation {
 async fn put_explanation(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ResourceQuery>,
-    Json(body): Json<SaveExplanation>,
-) -> ApiResult<Json<ExplanationResponse>> {
+    Json(body): Json<SaveMarkdown>,
+) -> ApiResult<Json<MarkdownResponse>> {
+    put_markdown(state, query, body, MarkdownKind::Explanation).await
+}
+
+async fn put_exploration(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ResourceQuery>,
+    Json(body): Json<SaveMarkdown>,
+) -> ApiResult<Json<MarkdownResponse>> {
+    put_markdown(state, query, body, MarkdownKind::Exploration).await
+}
+
+async fn put_markdown(
+    state: Arc<AppState>,
+    query: ResourceQuery,
+    body: SaveMarkdown,
+    kind: MarkdownKind,
+) -> ApiResult<Json<MarkdownResponse>> {
     state.authorize(&query.token)?;
-    let path = explanation_path(&state, &query.module, &query.file).await?;
+    let path = markdown_path(&state, kind, &query.module, &query.file).await?;
     ensure_safe_existing_file(&state.root, &path)?;
     let current = std::fs::read_to_string(&path)
-        .map_err(|error| ApiError::io("reading explanation", error))?;
+        .map_err(|error| ApiError::io(&format!("reading {}", kind.name()), error))?;
     if content_revision(&current) != body.revision {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
-            "the explanation changed on disk; reload before saving",
+            format!("the {} changed on disk; reload before saving", kind.name()),
         ));
     }
     atomic_write(&path, &body.content)
-        .map_err(|error| ApiError::internal("saving explanation", error))?;
+        .map_err(|error| ApiError::internal(&format!("saving {}", kind.name()), error))?;
     state
         .refresh_workspace()
         .await
         .map_err(|error| ApiError::internal("refreshing workspace", error))?;
-    Ok(Json(ExplanationResponse {
+    Ok(Json(MarkdownResponse {
         module: query.module,
         filename: query.file,
         title: markdown_title(&body.content, &path),
@@ -386,7 +423,7 @@ async fn put_explanation(
 }
 
 #[derive(Debug, Deserialize)]
-struct NewExplanation {
+struct NewMarkdown {
     module: String,
     title: String,
     filename: String,
@@ -395,29 +432,49 @@ struct NewExplanation {
 async fn create_explanation(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AuthQuery>,
-    Json(body): Json<NewExplanation>,
-) -> ApiResult<(StatusCode, Json<ExplanationResponse>)> {
+    Json(body): Json<NewMarkdown>,
+) -> ApiResult<(StatusCode, Json<MarkdownResponse>)> {
+    create_markdown(state, query, body, MarkdownKind::Explanation).await
+}
+
+async fn create_exploration(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+    Json(body): Json<NewMarkdown>,
+) -> ApiResult<(StatusCode, Json<MarkdownResponse>)> {
+    create_markdown(state, query, body, MarkdownKind::Exploration).await
+}
+
+async fn create_markdown(
+    state: Arc<AppState>,
+    query: AuthQuery,
+    body: NewMarkdown,
+    kind: MarkdownKind,
+) -> ApiResult<(StatusCode, Json<MarkdownResponse>)> {
     state.authorize(&query.token)?;
     let title = validate_title(&body.title)?;
     let filename = normalize_markdown_filename(&body.filename)?;
-    let path = explanation_path(&state, &body.module, &filename).await?;
-    ensure_safe_parent(&state.root, path.parent().expect("explanation has parent"))?;
+    let path = markdown_path(&state, kind, &body.module, &filename).await?;
+    ensure_safe_parent(
+        &state.root,
+        path.parent().expect("Markdown document has parent"),
+    )?;
     if path.exists() {
         return Err(ApiError::new(
             StatusCode::CONFLICT,
-            "an explanation with that filename already exists",
+            format!("a {} with that filename already exists", kind.name()),
         ));
     }
     let content = format!("# {title}\n");
     atomic_write(&path, &content)
-        .map_err(|error| ApiError::internal("creating explanation", error))?;
+        .map_err(|error| ApiError::internal(&format!("creating {}", kind.name()), error))?;
     state
         .refresh_workspace()
         .await
         .map_err(|error| ApiError::internal("refreshing workspace", error))?;
     Ok((
         StatusCode::CREATED,
-        Json(ExplanationResponse {
+        Json(MarkdownResponse {
             module: body.module,
             filename,
             title,
@@ -507,7 +564,8 @@ async fn put_drawing(
 #[derive(Debug, Deserialize)]
 struct NewDrawing {
     module: String,
-    explanation: String,
+    document: String,
+    kind: MarkdownKind,
     name: String,
 }
 
@@ -527,8 +585,8 @@ async fn create_drawing(
     let display_name = validate_title(&body.name)?;
     let stem = display_name.to_case(Case::Snake);
     let filename = normalize_drawing_filename(&format!("{stem}.svg"))?;
-    let explanation = explanation_path(&state, &body.module, &body.explanation).await?;
-    ensure_safe_existing_file(&state.root, &explanation)?;
+    let document = markdown_path(&state, body.kind, &body.module, &body.document).await?;
+    ensure_safe_existing_file(&state.root, &document)?;
     let path = drawing_path(&state, &body.module, &filename).await?;
     ensure_safe_parent(&state.root, path.parent().expect("drawing has parent"))?;
     if path.exists() {
@@ -539,11 +597,11 @@ async fn create_drawing(
     }
     let svg = create_empty_drawing_svg();
     atomic_write(&path, &svg).map_err(|error| ApiError::internal("creating drawing", error))?;
-    let relative =
-        pathdiff::diff_paths(&path, explanation.parent().expect("explanation has parent"))
-            .ok_or_else(|| {
-                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "cannot link drawing")
-            })?;
+    let relative = pathdiff::diff_paths(
+        &path,
+        document.parent().expect("Markdown document has parent"),
+    )
+    .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "cannot link drawing"))?;
     let relative = relative.to_string_lossy().replace('\\', "/");
     state.bump_revision().await;
     Ok((
@@ -567,12 +625,34 @@ async fn get_drawing_file(
     Ok(([(header::CONTENT_TYPE, "image/svg+xml")], bytes).into_response())
 }
 
-async fn explanation_path(state: &AppState, module: &str, filename: &str) -> ApiResult<PathBuf> {
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MarkdownKind {
+    Explanation,
+    Exploration,
+}
+
+impl MarkdownKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Explanation => "explanation",
+            Self::Exploration => "exploration",
+        }
+    }
+}
+
+async fn markdown_path(
+    state: &AppState,
+    kind: MarkdownKind,
+    module: &str,
+    filename: &str,
+) -> ApiResult<PathBuf> {
     let model = state.model.read().await;
-    model
-        .workspace
-        .explanation_path(module, filename)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "explanation not found"))
+    let path = match kind {
+        MarkdownKind::Explanation => model.workspace.explanation_path(module, filename),
+        MarkdownKind::Exploration => model.workspace.exploration_path(module, filename),
+    };
+    path.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, format!("{} not found", kind.name())))
 }
 
 async fn drawing_path(state: &AppState, module: &str, filename: &str) -> ApiResult<PathBuf> {
@@ -633,20 +713,6 @@ fn validate_title(title: &str) -> ApiResult<String> {
         ));
     }
     Ok(title.to_owned())
-}
-
-fn markdown_title(content: &str, path: &Path) -> String {
-    content
-        .lines()
-        .find_map(|line| line.strip_prefix("# ").map(str::trim))
-        .filter(|title| !title.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("Untitled")
-                .to_owned()
-        })
 }
 
 fn content_revision(content: &str) -> String {
@@ -839,7 +905,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_writes_explanations_and_mirrored_drawings_with_conflict_checks() {
+    async fn api_writes_markdown_documents_and_mirrored_drawings_with_conflict_checks() {
         let project = sample_project();
         let workspace = Workspace::load_with_documents(project.path(), &HashMap::new()).unwrap();
         let (revisions, _) = broadcast::channel(8);
@@ -898,13 +964,48 @@ mod tests {
         assert_eq!(conflict.0, StatusCode::CONFLICT);
         assert_eq!(fs::read_to_string(&explanation).unwrap(), "# Frame Loop\n");
 
+        let exploration = json_request(
+            &app,
+            "POST",
+            "/api/explorations?token=test-token",
+            serde_json::json!({
+                "module": "sample::engine",
+                "title": "Async Rendering",
+                "filename": "async_rendering"
+            }),
+        )
+        .await;
+        assert_eq!(exploration.0, StatusCode::CREATED);
+        assert_eq!(exploration.1["filename"], "async_rendering.md");
+        let exploration_path = project
+            .path()
+            .join("src/engine/explorations/async_rendering.md");
+        assert_eq!(
+            fs::read_to_string(&exploration_path).unwrap(),
+            "# Async Rendering\n"
+        );
+
+        let saved = json_request(
+            &app,
+            "PUT",
+            "/api/exploration?token=test-token&module=sample::engine&file=async_rendering.md",
+            serde_json::json!({
+                "content": "# Async Rendering\n\nOpen questions.\n",
+                "revision": content_revision("# Async Rendering\n")
+            }),
+        )
+        .await;
+        assert_eq!(saved.0, StatusCode::OK);
+        assert_eq!(saved.1["title"], "Async Rendering");
+
         let drawing = json_request(
             &app,
             "POST",
             "/api/drawings?token=test-token",
             serde_json::json!({
                 "module": "sample::engine",
-                "explanation": "frame_loop.md",
+                "document": "frame_loop.md",
+                "kind": "explanation",
                 "name": "Request Flow"
             }),
         )

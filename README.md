@@ -3,7 +3,7 @@
 `documenter` is an editor-agnostic Rust language server that opens a local,
 documentation-centric view of a codebase. Its web workspace combines an
 interactive module dependency graph, native Rust module documentation, Markdown
-explanations, and editable Excalidraw drawings.
+explanations and explorations, and editable Excalidraw drawings.
 
 ## Build
 
@@ -55,17 +55,31 @@ code actions menu (`Cmd+.` on macOS or `Ctrl+.` on Windows/Linux).
 
 ## Documentation layout
 
-Explanations are available only for file-backed modules and live below that
-module's source directory:
+Explanations and explorations are available only for file-backed modules and
+live below that module's source directory:
 
 ```text
-src/lib.rs          -> src/explanations/
-src/foo.rs          -> src/foo/explanations/
-src/foo/mod.rs      -> src/foo/explanations/
+src/lib.rs          -> src/explanations/ and src/explorations/
+src/foo.rs          -> src/foo/explanations/ and src/foo/explorations/
+src/foo/mod.rs      -> src/foo/explanations/ and src/foo/explorations/
 ```
 
 The first Markdown H1 is the displayed title. The filename is separate and does
-not change when the title is edited.
+not change when the title is edited. Explorations use the same editor as
+explanations but remain listed separately as rough investigative notes.
+
+Projects can contract structural modules into their parents in the graph by
+matching exact final module names:
+
+```toml
+# .documenter/config.toml
+[module_graph]
+fold = ["interface", "internal"]
+```
+
+This matches `crate::interface` and `crate::render_api::interface`, but not
+`crate::interfaces`. Folding affects only the graph; every module remains in the
+analyzed workspace and keeps its details route.
 
 Drawings are editable SVG files with their Excalidraw scene embedded in the same
 file. They mirror the crate and module path from the repository root:
@@ -74,7 +88,7 @@ file. They mirror the crate and module path from the repository root:
 .documenter/drawings/<crate>/<module-path>/<drawing>.svg
 ```
 
-Explanation edits use **Source** and **Preview** modes. `Cmd+Enter` on macOS or
+Markdown edits use **Source** and **Preview** modes. `Cmd+Enter` on macOS or
 `Ctrl+Enter` on Windows/Linux toggles them. The visible **Save** button and
 `Cmd+S`/`Ctrl+S` save Markdown or drawing changes. External changes refresh live;
 dirty editors keep their local text and report a conflict instead of overwriting

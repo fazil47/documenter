@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build an editor-agnostic Rust language server that opens a local documentation workspace for a codebase. The workspace combines a live module dependency graph, native Rust module documentation, module-owned Markdown explanations, and editable Excalidraw drawings.
+Build an editor-agnostic Rust language server that opens a local documentation workspace for a codebase. The workspace combines a live module dependency graph, native Rust module documentation, module-owned Markdown explanations and explorations, and editable Excalidraw drawings.
 
 The first release supports Rust only. It does not assume any particular module layout beyond Rust's own module rules.
 
@@ -21,9 +21,9 @@ The analyzer adapts the behavior of the neighboring `module-viz` project instead
 3. Walks library and binary module trees, including file-backed and inline modules.
 4. Extracts module-level `use` dependencies and resolves them to the deepest known local module.
 5. Extracts native module documentation from Rust doc attributes and comments.
-6. Associates explanations only with file-backed modules.
+6. Associates explanations and explorations only with file-backed modules.
 
-Each module receives a stable ID such as `crate_name::rendering::wgpu`. Inline modules appear in the graph and have details pages, but do not own explanation directories.
+Each module receives a stable ID such as `crate_name::rendering::wgpu`. Inline modules appear in the graph and have details pages, but do not own explanation or exploration directories.
 
 For a file-backed module, its explanation directory follows the normal Rust child-module directory:
 
@@ -34,11 +34,14 @@ src/foo/mod.rs   -> src/foo/explanations/
 src/foo/bar.rs   -> src/foo/bar/explanations/
 ```
 
+Exploration directories follow the same mapping with `explorations` replacing
+`explanations`.
+
 ## Application architecture
 
 The Rust binary has a small set of deep modules:
 
-- analysis owns Cargo discovery, parsing, graph construction, native docs, and explanation discovery;
+- analysis owns Cargo discovery, parsing, graph construction, native docs, and Markdown resource discovery;
 - LSP owns protocol state and the command that opens the site;
 - server owns lifecycle, routing, live-update events, and repository writes;
 - drawing owns the self-contained editable SVG representation;
@@ -61,22 +64,23 @@ The root route displays the workspace graph using Cytoscape.js's canvas renderer
 
 Dragged positions are not persisted. Reloading runs ELK again.
 
-## Module and explanation pages
+## Module and Markdown pages
 
-A module page renders its native Rust module documentation and lists its explanations by title. The title is the first H1 in the Markdown file; existing files without an H1 fall back to the filename stem.
+A module page renders its native Rust module documentation and lists its explanations and explorations separately by title. The title is the first H1 in the Markdown file; existing files without an H1 fall back to the filename stem.
 
-File-backed module pages provide **New explanation**. The dialog contains:
+File-backed module pages provide **New explanation** and **New exploration**.
+Both dialogs contain:
 
 - a title, used to seed the first H1;
 - a filename, initially derived from the title as snake case but independently editable before creation.
 
-Creation writes `<filename>.md` containing `# <title>` and opens its explanation route. The filename is a stable storage key and URL component. Editing the H1 never renames the file.
+Creation writes `<filename>.md` containing `# <title>` and opens its resource route. The filename is a stable storage key and URL component. Editing the H1 never renames the file.
 
-An explanation opens in rendered Preview mode. A visible Source/Preview control and `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux switch modes. Source mode provides a Markdown editor, a visible **Save** button, and `Cmd+S` or `Ctrl+S`. Leaving with unsaved changes requires confirmation.
+An explanation or exploration opens in rendered Preview mode. A visible Source/Preview control and `Cmd+Enter` on macOS or `Ctrl+Enter` on Windows and Linux switch modes. Source mode provides a Markdown editor, a visible **Save** button, and `Cmd+S` or `Ctrl+S`. Leaving with unsaved changes requires confirmation.
 
 ## Drawing workflow
 
-Source mode provides **Insert drawing**. It asks for a drawing name, creates an editable SVG, inserts a relative Markdown image at the current cursor, saves the explanation, and navigates to the drawing route.
+Source mode provides **Insert drawing**. It asks for a drawing name, creates an editable SVG, inserts a relative Markdown image at the current cursor, saves the Markdown document, and navigates to the drawing route.
 
 Drawings are owned centrally by the repository and mirror their module paths:
 
@@ -84,9 +88,9 @@ Drawings are owned centrally by the repository and mirror their module paths:
 <repo-root>/.documenter/drawings/<crate>/<module-path>/<drawing_name>.svg
 ```
 
-For a crate-root module, the path stops at the crate name. The server computes the relative link from the explanation file to the drawing so ordinary Markdown renderers can display it.
+For a crate-root module, the path stops at the crate name. The server computes the relative link from the Markdown file to the drawing so ordinary Markdown renderers can display it.
 
-Rendered explanations show an **Edit drawing** link for editable SVGs. Drawing URLs are ordinary links, so they open in the same tab by default and support normal middle-click or `Cmd/Ctrl`-click behavior for a new tab.
+Rendered Markdown documents show an **Edit drawing** link for editable SVGs. Drawing URLs are ordinary links, so they open in the same tab by default and support normal middle-click or `Cmd/Ctrl`-click behavior for a new tab.
 
 The drawing route contains a full-page Excalidraw editor with a visible **Save** button and `Cmd/Ctrl+S`. As in `zed-notes`, a saved drawing is one portable SVG with an opaque white background, real rendered geometry, and an embedded Excalidraw scene. No separate `.excalidraw` file exists.
 
@@ -102,7 +106,7 @@ A clean page reloads changed content automatically. A dirty Markdown or drawing 
 
 The browser sends module, explanation, and drawing identifiers rather than arbitrary filesystem paths. The server resolves them against its analyzed workspace model.
 
-Explanation writes are limited to discovered file-backed modules' `explanations/` directories. Drawing writes are limited to `<repo-root>/.documenter/drawings/`. Canonical-path validation rejects absolute paths, `..`, symlink escapes, unsupported extensions, and oversized request bodies. Writes use a temporary sibling file followed by atomic replacement.
+Markdown writes are limited to discovered file-backed modules' `explanations/` and `explorations/` directories. Drawing writes are limited to `<repo-root>/.documenter/drawings/`. Canonical-path validation rejects absolute paths, `..`, symlink escapes, unsupported extensions, and oversized request bodies. Writes use a temporary sibling file followed by atomic replacement.
 
 All APIs require the per-session token. Responses disable external referrers, and the application loads no runtime resources from the internet.
 
@@ -115,15 +119,15 @@ Tests cover:
 - Cargo discovery, Rust modules, dependencies, `cfg`, native docs, and explanation mapping;
 - real LSP stdio initialization, code actions, command execution, server reuse, and shutdown;
 - HTTP creation, editing, live events, stale revisions, traversal attempts, symlink escapes, atomic writes, and SVG round-tripping;
-- frontend graph navigation, shortcuts, explanation creation, and drawing editing;
-- one browser smoke flow through explanation and drawing authoring.
+- frontend graph navigation, shortcuts, Markdown creation, and drawing editing;
+- one browser smoke flow through Markdown and drawing authoring.
 
 The standard verification runs Rust formatting, Clippy, Rust tests, frontend tests, and the production frontend build. After implementation, a separate sub-agent reviews module depth and unnecessary public API exposure, and its findings are addressed before completion.
 
 ## Out of scope for the first release
 
 - languages other than Rust;
-- explanations for inline modules;
+- explanations or explorations for inline modules;
 - persisted graph positions;
 - WYSIWYG Markdown editing;
 - automatic filename changes when an explanation title changes;

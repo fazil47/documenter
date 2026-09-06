@@ -1,3 +1,5 @@
+import { markdownResource } from "./resources.js";
+
 const params = new URLSearchParams(window.location.search);
 
 export const token = params.get("token") || "";
@@ -42,8 +44,10 @@ function href(path, values = {}) {
 export const routes = {
   graph: () => href("/"),
   module: (module) => href(`/modules/${encodeURIComponent(module)}`),
-  explanation: (module, file) =>
-    href(`/explanations/${encodeURIComponent(module)}/${encodeURIComponent(file)}`),
+  markdown: (kind, module, file) => {
+    const resource = markdownResource(kind);
+    return href(`/${resource.path}/${encodeURIComponent(module)}/${encodeURIComponent(file)}`);
+  },
   drawing: (module, file, values = {}) =>
     href(`/drawings/${encodeURIComponent(module)}/${encodeURIComponent(file)}`, values),
 };

@@ -3,32 +3,10 @@ import cytoscape from "cytoscape";
 import elk from "cytoscape-elk";
 
 import { routes } from "./api.js";
+import { graphElements } from "./graph.js";
 
 cytoscape.use(elk);
 
-function graphElements(workspace) {
-  const crates = [...new Set(workspace.modules.map((module) => module.crate_name))];
-  const parents = crates.map((name) => ({
-    data: { id: `__crate__${name}`, label: name, crateGroup: true },
-  }));
-  const modules = workspace.modules.map((module) => ({
-    data: {
-      id: module.id,
-      moduleId: module.id,
-      label: module.id === module.crate_name ? "crate root" : module.name,
-      parent: `__crate__${module.crate_name}`,
-      fileBacked: module.file_backed,
-    },
-  }));
-  const edges = workspace.edges.map((edge, index) => ({
-    data: {
-      id: `edge-${index}`,
-      source: edge.source,
-      target: edge.target,
-    },
-  }));
-  return [...parents, ...modules, ...edges];
-}
 const layoutOptions = {
   name: "elk",
   nodeDimensionsIncludeLabels: true,

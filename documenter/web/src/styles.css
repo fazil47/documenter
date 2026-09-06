@@ -60,10 +60,10 @@ input:focus, textarea:focus { border-color: #76aee6; box-shadow: 0 0 0 3px rgb(1
 .content-section > h2, .section-heading-row h2 { margin: 0; font-size: 1.05rem; color: #93a8bd; }
 .section-heading-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
 .empty-copy { color: #6f8397; }
-.explanation-list { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: 0.55rem; }
-.explanation-list a { display: flex; justify-content: space-between; gap: 1rem; padding: 0.9rem 1rem; color: #dce5ef; background: #151d27; border: 1px solid #293746; border-radius: 8px; }
-.explanation-list a:hover { background: #1a2531; border-color: #465a6f; }
-.explanation-list code { color: #71869a; font-size: 0.76rem; }
+.document-list { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: 0.55rem; }
+.document-list a { display: flex; justify-content: space-between; gap: 1rem; padding: 0.9rem 1rem; color: #dce5ef; background: #151d27; border: 1px solid #293746; border-radius: 8px; }
+.document-list a:hover { background: #1a2531; border-color: #465a6f; }
+.document-list code { color: #71869a; font-size: 0.76rem; }
 
 .markdown { color: #c8d3df; font-size: 1rem; line-height: 1.72; }
 .markdown h1, .markdown h2, .markdown h3 { color: #f0f4f8; line-height: 1.25; margin: 2em 0 0.65em; }
@@ -115,7 +115,7 @@ input:focus, textarea:focus { border-color: #76aee6; box-shadow: 0 0 0 3px rgb(1
   .graph-search { order: 2; width: 100%; }
   .graph-search input { width: 100%; }
   .content-shell { padding-top: 2.5rem; }
-  .explanation-list a { align-items: flex-start; flex-direction: column; }
+  .document-list a { align-items: flex-start; flex-direction: column; }
   .editor-toolbar .back-link { width: calc(100% - 8rem); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .markdown-editor, .preview-shell { padding-left: 1rem; padding-right: 1rem; }
   .save-status { display: none; }

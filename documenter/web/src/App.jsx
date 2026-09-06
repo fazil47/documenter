@@ -1,9 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
 import { api, apiUrl, token } from "./api.js";
-import ExplanationPage from "./ExplanationPage.jsx";
 import GraphPage from "./GraphPage.jsx";
+import MarkdownPage from "./MarkdownPage.jsx";
 import ModulePage, { NotFound } from "./ModulePage.jsx";
+import { markdownResourceForPath } from "./resources.js";
 
 const DrawingPage = lazy(() => import("./DrawingPage.jsx"));
 
@@ -16,8 +17,9 @@ function route() {
   if (segments[0] === "modules" && segments.length === 2) {
     return { name: "module", module: segments[1] };
   }
-  if (segments[0] === "explanations" && segments.length === 3) {
-    return { name: "explanation", module: segments[1], file: segments[2] };
+  const markdown = markdownResourceForPath(segments[0]);
+  if (markdown && segments.length === 3) {
+    return { name: "markdown", kind: markdown.kind, module: segments[1], file: segments[2] };
   }
   if (segments[0] === "drawings" && segments.length === 3) {
     return { name: "drawing", module: segments[1], file: segments[2] };
@@ -62,8 +64,15 @@ export default function App() {
   const current = route();
   if (current.name === "graph") return <GraphPage workspace={workspace} />;
   if (current.name === "module") return <ModulePage workspace={workspace} moduleId={current.module} />;
-  if (current.name === "explanation") {
-    return <ExplanationPage moduleId={current.module} filename={current.file} workspaceRevision={revision} />;
+  if (current.name === "markdown") {
+    return (
+      <MarkdownPage
+        kind={current.kind}
+        moduleId={current.module}
+        filename={current.file}
+        workspaceRevision={revision}
+      />
+    );
   }
   if (current.name === "drawing") {
     return (

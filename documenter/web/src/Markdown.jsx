@@ -4,7 +4,7 @@ import { marked } from "marked";
 
 import { apiUrl, routes } from "./api.js";
 
-function render(text, module, explanation) {
+function render(text, module, markdownDocument, kind) {
   const sanitized = DOMPurify.sanitize(marked.parse(text || ""));
   const document = new DOMParser().parseFromString(sanitized, "text/html");
   for (const image of document.querySelectorAll("img")) {
@@ -16,16 +16,16 @@ function render(text, module, explanation) {
     image.setAttribute("loading", "lazy");
     const link = document.createElement("a");
     link.className = "edit-drawing-link";
-    link.href = routes.drawing(module, filename, { from: explanation });
+    link.href = routes.drawing(module, filename, { from: markdownDocument, kind });
     link.textContent = "Edit drawing";
     image.insertAdjacentElement("afterend", link);
   }
   return document.body.innerHTML;
 }
-export default function Markdown({ children, module = "", explanation = "" }) {
+export default function Markdown({ children, module = "", document = "", kind = "explanation" }) {
   const html = useMemo(
-    () => render(children, module, explanation),
-    [children, module, explanation],
+    () => render(children, module, document, kind),
+    [children, module, document, kind],
   );
   return <article className="markdown" dangerouslySetInnerHTML={{ __html: html }} />;
 }

@@ -71,10 +71,13 @@ fn documentation_input(root: &Path, path: &Path) -> bool {
     if path.file_name().is_some_and(|name| name == "Cargo.toml") {
         return true;
     }
+    if relative == Path::new(".documenter/config.toml") {
+        return true;
+    }
     match path.extension().and_then(|extension| extension.to_str()) {
         Some(extension) if extension.eq_ignore_ascii_case("rs") => true,
         Some(extension) if extension.eq_ignore_ascii_case("md") => {
-            has_component(relative, "explanations")
+            has_component(relative, "explanations") || has_component(relative, "explorations")
         }
         Some(extension) if extension.eq_ignore_ascii_case("svg") => {
             relative.starts_with(PathBuf::from(".documenter").join("drawings"))
@@ -111,6 +114,14 @@ mod tests {
         assert!(documentation_input(
             root,
             Path::new("/workspace/src/foo/explanations/design.md")
+        ));
+        assert!(documentation_input(
+            root,
+            Path::new("/workspace/src/foo/explorations/idea.md")
+        ));
+        assert!(documentation_input(
+            root,
+            Path::new("/workspace/.documenter/config.toml")
         ));
         assert!(documentation_input(
             root,

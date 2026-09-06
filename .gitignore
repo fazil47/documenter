@@ -1,4 +1,5 @@
 /target
+/.agent-log
 /documenter-zed/extension.wasm
 /documenter-zed/target
 /documenter/web/node_modules

@@ -8,7 +8,7 @@ use syn::{Attribute, Expr, Item, ItemMod, Lit, Meta, UseTree};
 
 use super::cargo::Package;
 use super::cfg::{self, CfgSet};
-use super::{Edge, Explanation, Module, explanation_title};
+use super::{Edge, MarkdownFile, Module, markdown_file_title};
 
 pub(super) struct Analysis {
     pub(super) modules: Vec<Module>,
@@ -163,9 +163,31 @@ impl<'a> ContextState<'a> {
     }
 
     fn insert_file_module(&mut self, id: &str, file_path: &Path, docs: String) {
-        let directory = module_directory(file_path).join("explanations");
-        let mut explanations = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&directory) {
+        let module_directory = module_directory(file_path);
+        let explanation_dir = module_directory.join("explanations");
+        let exploration_dir = module_directory.join("explorations");
+        let explanations = self.discover_markdown(&explanation_dir);
+        let explorations = self.discover_markdown(&exploration_dir);
+        self.modules.insert(
+            id.to_owned(),
+            Module {
+                id: id.to_owned(),
+                crate_name: crate_name(id).to_owned(),
+                name: module_name(id),
+                docs,
+                file_backed: true,
+                folded: false,
+                explanations,
+                explorations,
+                explanation_dir: Some(explanation_dir),
+                exploration_dir: Some(exploration_dir),
+            },
+        );
+    }
+
+    fn discover_markdown(&mut self, directory: &Path) -> Vec<MarkdownFile> {
+        let mut documents = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(directory) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if !path.is_file()
@@ -179,8 +201,8 @@ impl<'a> ContextState<'a> {
                 let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
                     continue;
                 };
-                match explanation_title(&path) {
-                    Ok(title) => explanations.push(Explanation {
+                match markdown_file_title(&path) {
+                    Ok(title) => documents.push(MarkdownFile {
                         filename: filename.to_owned(),
                         title,
                     }),
@@ -188,19 +210,8 @@ impl<'a> ContextState<'a> {
                 }
             }
         }
-        explanations.sort_by(|left, right| left.title.cmp(&right.title));
-        self.modules.insert(
-            id.to_owned(),
-            Module {
-                id: id.to_owned(),
-                crate_name: crate_name(id).to_owned(),
-                name: module_name(id),
-                docs,
-                file_backed: true,
-                explanations,
-                explanation_dir: Some(directory),
-            },
-        );
+        documents.sort_by(|left, right| left.title.cmp(&right.title));
+        documents
     }
 
     fn insert_inline_module(&mut self, id: &str, docs: String) {
@@ -210,8 +221,11 @@ impl<'a> ContextState<'a> {
             name: module_name(id),
             docs,
             file_backed: false,
+            folded: false,
             explanations: Vec::new(),
+            explorations: Vec::new(),
             explanation_dir: None,
+            exploration_dir: None,
         });
     }
 

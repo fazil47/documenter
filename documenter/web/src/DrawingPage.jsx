@@ -3,6 +3,7 @@ import { Excalidraw, exportToSvg } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 
 import { api, routes } from "./api.js";
+import { markdownKinds } from "./resources.js";
 
 export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
   const [drawing, setDrawing] = useState(null);
@@ -15,6 +16,10 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
   const acceptChanges = useRef(false);
   const seenWorkspaceRevision = useRef(workspaceRevision);
   const from = useMemo(() => new URLSearchParams(window.location.search).get("from"), []);
+  const fromKind = useMemo(() => {
+    const kind = new URLSearchParams(window.location.search).get("kind");
+    return markdownKinds.includes(kind) ? kind : "explanation";
+  }, []);
 
   const load = useCallback(async () => {
     setError("");
@@ -130,7 +135,7 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
     appState: { ...(scene.appState || {}), viewBackgroundColor: "#ffffff" },
     files: scene.files || {},
   };
-  const back = from ? routes.explanation(moduleId, from) : routes.module(moduleId);
+  const back = from ? routes.markdown(fromKind, moduleId, from) : routes.module(moduleId);
 
   return (
     <main className="drawing-page">
