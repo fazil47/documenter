@@ -3,18 +3,23 @@ function parentModule(id) {
   return separator < 0 ? id : id.slice(0, separator);
 }
 
-function visibleModule(id, folded) {
+function visibleNode(id, folded, libraryOnlyRoots) {
   let current = id;
   while (folded.has(current)) current = parentModule(current);
-  return current;
+  return libraryOnlyRoots.has(current) ? `__crate__${current}` : current;
 }
 
 export function graphElements(workspace) {
   const folded = new Set(
     workspace.modules.filter((module) => module.folded).map((module) => module.id),
   );
-  const visibleModules = workspace.modules.filter((module) => !folded.has(module.id));
-  const crates = [...new Set(visibleModules.map((module) => module.crate_name))];
+  const libraryOnlyRoots = new Set(
+    workspace.modules.filter((module) => module.library_only_root).map((module) => module.id),
+  );
+  const visibleModules = workspace.modules.filter(
+    (module) => !folded.has(module.id) && !libraryOnlyRoots.has(module.id),
+  );
+  const crates = [...new Set(workspace.modules.map((module) => module.crate_name))];
   const parents = crates.map((name) => ({
     data: { id: `__crate__${name}`, label: name, crateGroup: true },
   }));
@@ -29,8 +34,8 @@ export function graphElements(workspace) {
   }));
   const pairs = new Set();
   for (const edge of workspace.edges) {
-    const source = visibleModule(edge.source, folded);
-    const target = visibleModule(edge.target, folded);
+    const source = visibleNode(edge.source, folded, libraryOnlyRoots);
+    const target = visibleNode(edge.target, folded, libraryOnlyRoots);
     if (source !== target) pairs.add(`${source}\0${target}`);
   }
   const edges = [...pairs].map((pair, index) => {

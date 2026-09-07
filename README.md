@@ -81,6 +81,11 @@ This matches `crate::interface` and `crate::render_api::interface`, but not
 `crate::interfaces`. Folding affects only the graph; every module remains in the
 analyzed workspace and keeps its details route.
 
+Library-only roots backed by `lib.rs` are represented by their non-clickable
+crate container rather than a redundant inner `crate root` node. Packages with
+`main.rs` retain a visible `crate root` node, including packages that also have
+`lib.rs`.
+
 Drawings are editable SVG files with their Excalidraw scene embedded in the same
 file. They mirror the crate and module path from the repository root:
 

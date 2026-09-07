@@ -56,6 +56,12 @@ graph. Missing config means no modules are folded. Unknown fields are ignored;
 malformed configuration fails analysis with a path-specific error rather than
 silently changing the graph.
 
+Library-only roots backed by `lib.rs` remain in the analysis model but are
+omitted from the canvas because the crate container already shows their
+boundary. Their edges attach to that non-clickable container. Packages with
+`main.rs` retain a visible `crate root` module node, including packages that also
+have `lib.rs`.
+
 ## Verification
 
 Rust tests cover exploration discovery and paths, configuration parsing, exact
