@@ -9,14 +9,25 @@ function render(text, module, markdownDocument, kind) {
   const document = new DOMParser().parseFromString(sanitized, "text/html");
   for (const image of document.querySelectorAll("img")) {
     const source = image.getAttribute("src") || "";
-    if (!source.includes(".documenter/drawings/")) continue;
+    const drawingKind = source.includes(".documenter/exploration-drawings/")
+      ? "exploration"
+      : source.includes(".documenter/drawings/") ? "explanation" : null;
+    if (!drawingKind) continue;
     const filename = source.split("/").at(-1);
     if (!filename) continue;
-    image.setAttribute("src", apiUrl("/api/drawing-file", { module, file: filename }));
+    image.setAttribute("src", apiUrl("/api/drawing-file", {
+      module,
+      file: filename,
+      kind: drawingKind,
+    }));
     image.setAttribute("loading", "lazy");
     const link = document.createElement("a");
     link.className = "edit-drawing-link";
-    link.href = routes.drawing(module, filename, { from: markdownDocument, kind });
+    link.href = routes.drawing(module, filename, {
+      from: markdownDocument,
+      kind,
+      drawingKind,
+    });
     link.textContent = "Edit drawing";
     image.insertAdjacentElement("afterend", link);
   }

@@ -142,7 +142,11 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
       const next = `${before}${prefix}${drawing.markdown}${suffix}${after}`;
       const withDrawing = await saveContent(next, saved.revision);
       if (!withDrawing) throw new Error("Drawing was created, but its Markdown link could not be saved.");
-      window.location.assign(routes.drawing(moduleId, drawing.filename, { from: filename, kind }));
+      window.location.assign(routes.drawing(moduleId, drawing.filename, {
+        from: filename,
+        kind,
+        drawingKind: kind,
+      }));
     } catch (reason) {
       setDrawingError(reason.message);
       setDrawingBusy(false);

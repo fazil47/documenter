@@ -84,13 +84,15 @@ analyzed workspace and keeps its details route.
 Library-only roots backed by `lib.rs` are represented by their non-clickable
 crate container rather than a redundant inner `crate root` node. Packages with
 `main.rs` retain a visible `crate root` node, including packages that also have
-`lib.rs`.
+`lib.rs`. If folding would leave a library crate with no visible module nodes,
+its `crate root` is retained as the useful fallback.
 
 Drawings are editable SVG files with their Excalidraw scene embedded in the same
 file. They mirror the crate and module path from the repository root:
 
 ```text
-.documenter/drawings/<crate>/<module-path>/<drawing>.svg
+explanations -> .documenter/drawings/<crate>/<module-path>/<drawing>.svg
+explorations -> .documenter/exploration-drawings/<crate>/<module-path>/<drawing>.svg
 ```
 
 Markdown edits use **Source** and **Preview** modes. `Cmd+Enter` on macOS or

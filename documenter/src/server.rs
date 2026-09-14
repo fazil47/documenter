@@ -28,7 +28,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
 use self::storage::atomic_write;
-use crate::analysis::{Workspace, markdown_title};
+use crate::analysis::{DrawingCollection, Workspace, markdown_title};
 use crate::drawing::{
     create_empty_drawing_svg, extract_scene_from_svg, has_embedded_scene,
     has_opaque_white_background, merge_export_svg_with_scene,
@@ -291,6 +291,15 @@ struct ResourceQuery {
     file: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct DrawingQuery {
+    token: String,
+    module: String,
+    file: String,
+    #[serde(default)]
+    kind: MarkdownKind,
+}
+
 #[derive(Serialize)]
 struct WorkspaceResponse {
     revision: u64,
@@ -494,10 +503,10 @@ struct DrawingResponse {
 
 async fn get_drawing(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ResourceQuery>,
+    Query(query): Query<DrawingQuery>,
 ) -> ApiResult<Json<DrawingResponse>> {
     state.authorize(&query.token)?;
-    let path = drawing_path(&state, &query.module, &query.file).await?;
+    let path = drawing_path(&state, query.kind, &query.module, &query.file).await?;
     ensure_safe_existing_file(&state.root, &path)?;
     let svg =
         std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading drawing", error))?;
@@ -522,11 +531,11 @@ struct SaveDrawing {
 
 async fn put_drawing(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ResourceQuery>,
+    Query(query): Query<DrawingQuery>,
     Json(body): Json<SaveDrawing>,
 ) -> ApiResult<Json<DrawingResponse>> {
     state.authorize(&query.token)?;
-    let path = drawing_path(&state, &query.module, &query.file).await?;
+    let path = drawing_path(&state, query.kind, &query.module, &query.file).await?;
     ensure_safe_existing_file(&state.root, &path)?;
     let current =
         std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading drawing", error))?;
@@ -587,7 +596,7 @@ async fn create_drawing(
     let filename = normalize_drawing_filename(&format!("{stem}.svg"))?;
     let document = markdown_path(&state, body.kind, &body.module, &body.document).await?;
     ensure_safe_existing_file(&state.root, &document)?;
-    let path = drawing_path(&state, &body.module, &filename).await?;
+    let path = drawing_path(&state, body.kind, &body.module, &filename).await?;
     ensure_safe_parent(&state.root, path.parent().expect("drawing has parent"))?;
     if path.exists() {
         return Err(ApiError::new(
@@ -616,18 +625,19 @@ async fn create_drawing(
 
 async fn get_drawing_file(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ResourceQuery>,
+    Query(query): Query<DrawingQuery>,
 ) -> ApiResult<Response> {
     state.authorize(&query.token)?;
-    let path = drawing_path(&state, &query.module, &query.file).await?;
+    let path = drawing_path(&state, query.kind, &query.module, &query.file).await?;
     ensure_safe_existing_file(&state.root, &path)?;
     let bytes = std::fs::read(path).map_err(|error| ApiError::io("reading drawing", error))?;
     Ok(([(header::CONTENT_TYPE, "image/svg+xml")], bytes).into_response())
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum MarkdownKind {
+    #[default]
     Explanation,
     Exploration,
 }
@@ -637,6 +647,13 @@ impl MarkdownKind {
         match self {
             Self::Explanation => "explanation",
             Self::Exploration => "exploration",
+        }
+    }
+
+    fn drawing_collection(self) -> DrawingCollection {
+        match self {
+            Self::Explanation => DrawingCollection::Explanations,
+            Self::Exploration => DrawingCollection::Explorations,
         }
     }
 }
@@ -655,12 +672,17 @@ async fn markdown_path(
     path.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, format!("{} not found", kind.name())))
 }
 
-async fn drawing_path(state: &AppState, module: &str, filename: &str) -> ApiResult<PathBuf> {
+async fn drawing_path(
+    state: &AppState,
+    kind: MarkdownKind,
+    module: &str,
+    filename: &str,
+) -> ApiResult<PathBuf> {
     let filename = normalize_drawing_filename(filename)?;
     let model = state.model.read().await;
     Ok(model
         .workspace
-        .drawing_dir(module)
+        .drawing_dir(module, kind.drawing_collection())
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "module not found"))?
         .join(filename))
 }
@@ -1022,6 +1044,41 @@ mod tests {
         let svg = fs::read_to_string(drawing_path).unwrap();
         assert!(has_embedded_scene(&svg));
         assert!(has_opaque_white_background(&svg));
+
+        let exploration_drawing = json_request(
+            &app,
+            "POST",
+            "/api/drawings?token=test-token",
+            serde_json::json!({
+                "module": "sample::engine",
+                "document": "async_rendering.md",
+                "kind": "exploration",
+                "name": "Render Graph"
+            }),
+        )
+        .await;
+        assert_eq!(exploration_drawing.0, StatusCode::CREATED);
+        assert_eq!(exploration_drawing.1["filename"], "render_graph.svg");
+        assert_eq!(
+            exploration_drawing.1["markdown"],
+            "![Render Graph](../../../.documenter/exploration-drawings/sample/engine/render_graph.svg)"
+        );
+        let exploration_drawing_path = project
+            .path()
+            .join(".documenter/exploration-drawings/sample/engine/render_graph.svg");
+        assert!(has_embedded_scene(
+            &fs::read_to_string(exploration_drawing_path).unwrap()
+        ));
+
+        let loaded_exploration_drawing = json_request(
+            &app,
+            "GET",
+            "/api/drawing?token=test-token&module=sample::engine&file=render_graph.svg&kind=exploration",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(loaded_exploration_drawing.0, StatusCode::OK);
+        assert_eq!(loaded_exploration_drawing.1["filename"], "render_graph.svg");
     }
 
     #[tokio::test]

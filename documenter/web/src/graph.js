@@ -13,11 +13,18 @@ export function graphElements(workspace) {
   const folded = new Set(
     workspace.modules.filter((module) => module.folded).map((module) => module.id),
   );
-  const libraryOnlyRoots = new Set(
-    workspace.modules.filter((module) => module.library_only_root).map((module) => module.id),
+  const hiddenLibraryRoots = new Set(
+    workspace.modules
+      .filter((root) => root.library_only_root)
+      .filter((root) => workspace.modules.some(
+        (module) => module.crate_name === root.crate_name
+          && module.id !== root.id
+          && !folded.has(module.id),
+      ))
+      .map((module) => module.id),
   );
   const visibleModules = workspace.modules.filter(
-    (module) => !folded.has(module.id) && !libraryOnlyRoots.has(module.id),
+    (module) => !folded.has(module.id) && !hiddenLibraryRoots.has(module.id),
   );
   const crates = [...new Set(workspace.modules.map((module) => module.crate_name))];
   const parents = crates.map((name) => ({
@@ -34,8 +41,8 @@ export function graphElements(workspace) {
   }));
   const pairs = new Set();
   for (const edge of workspace.edges) {
-    const source = visibleNode(edge.source, folded, libraryOnlyRoots);
-    const target = visibleNode(edge.target, folded, libraryOnlyRoots);
+    const source = visibleNode(edge.source, folded, hiddenLibraryRoots);
+    const target = visibleNode(edge.target, folded, hiddenLibraryRoots);
     if (source !== target) pairs.add(`${source}\0${target}`);
   }
   const edges = [...pairs].map((pair, index) => {

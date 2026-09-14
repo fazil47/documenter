@@ -49,6 +49,21 @@ struct Edge {
     target: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DrawingCollection {
+    Explanations,
+    Explorations,
+}
+
+impl DrawingCollection {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Explanations => "drawings",
+            Self::Explorations => "exploration-drawings",
+        }
+    }
+}
+
 impl Workspace {
     #[cfg(test)]
     fn load(start: &Path) -> Result<Self> {
@@ -97,9 +112,13 @@ impl Workspace {
         self.markdown_path(module_id, filename, |module| &module.exploration_dir)
     }
 
-    pub(crate) fn drawing_dir(&self, module_id: &str) -> Option<PathBuf> {
+    pub(crate) fn drawing_dir(
+        &self,
+        module_id: &str,
+        collection: DrawingCollection,
+    ) -> Option<PathBuf> {
         self.module(module_id)?;
-        let mut path = self.root.join(".documenter").join("drawings");
+        let mut path = self.root.join(".documenter").join(collection.directory());
         for segment in module_id.split("::") {
             path.push(segment);
         }

@@ -81,6 +81,28 @@ describe("graphElements", () => {
         .map((element) => element.data.moduleId),
     ).toEqual(["app"]);
   });
+
+  it("keeps a library crate root when folding leaves its crate empty", () => {
+    const workspace = {
+      modules: [
+        module("renderer_wgpu", false, true),
+        module("renderer_wgpu::interface", true),
+        module("renderer_wgpu::internal", true),
+      ],
+      edges: [
+        edge("renderer_wgpu", "renderer_wgpu::interface"),
+        edge("renderer_wgpu::internal", "renderer_wgpu"),
+      ],
+    };
+
+    const elements = graphElements(workspace);
+    expect(
+      elements
+        .filter((element) => element.data.moduleId)
+        .map((element) => element.data.moduleId),
+    ).toEqual(["renderer_wgpu"]);
+    expect(elements.filter((element) => element.data.source)).toHaveLength(0);
+  });
 });
 
 function module(id, folded, libraryOnlyRoot = false) {

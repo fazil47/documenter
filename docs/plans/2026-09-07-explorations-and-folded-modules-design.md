@@ -27,7 +27,9 @@ The server treats the two Markdown kinds through one private resource
 abstraction. Public HTTP routes remain explicit (`/api/explanation` and
 `/api/exploration`) so invalid resource kinds cannot select arbitrary paths.
 Drawings record the Markdown resource kind in their creation request so links
-are calculated relative to the correct directory.
+are calculated relative to the correct directory. Explanation drawings use
+`.documenter/drawings/`; exploration drawings use the independently ignorable
+`.documenter/exploration-drawings/` tree.
 
 ## Project configuration and graph folding
 
@@ -60,7 +62,8 @@ Library-only roots backed by `lib.rs` remain in the analysis model but are
 omitted from the canvas because the crate container already shows their
 boundary. Their edges attach to that non-clickable container. Packages with
 `main.rs` retain a visible `crate root` module node, including packages that also
-have `lib.rs`.
+have `lib.rs`. When folding removes every other visible node in a library crate,
+the root remains visible so the crate never renders as an empty container.
 
 ## Verification
 

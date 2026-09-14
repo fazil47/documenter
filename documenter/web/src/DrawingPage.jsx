@@ -5,6 +5,14 @@ import "@excalidraw/excalidraw/index.css";
 import { api, routes } from "./api.js";
 import { markdownKinds } from "./resources.js";
 
+function drawingSnapshot(elements, appState, files) {
+  return JSON.stringify({
+    elements: (elements || []).filter((element) => !element.isDeleted),
+    gridSize: appState?.gridSize ?? null,
+    files: files || {},
+  });
+}
+
 export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
   const [drawing, setDrawing] = useState(null);
   const [editorKey, setEditorKey] = useState(0);
@@ -13,30 +21,41 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
   const [error, setError] = useState("");
   const [externalChange, setExternalChange] = useState(false);
   const apiRef = useRef(null);
-  const acceptChanges = useRef(false);
+  const savedSnapshot = useRef(null);
   const seenWorkspaceRevision = useRef(workspaceRevision);
   const from = useMemo(() => new URLSearchParams(window.location.search).get("from"), []);
   const fromKind = useMemo(() => {
     const kind = new URLSearchParams(window.location.search).get("kind");
     return markdownKinds.includes(kind) ? kind : "explanation";
   }, []);
+  const drawingKind = useMemo(() => {
+    const kind = new URLSearchParams(window.location.search).get("drawingKind");
+    return markdownKinds.includes(kind) ? kind : fromKind;
+  }, [fromKind]);
+
+  const fetchDrawing = useCallback(
+    () => api("/api/drawing", {}, { module: moduleId, file: filename, kind: drawingKind }),
+    [moduleId, filename, drawingKind],
+  );
+
+  const showDrawing = useCallback((loaded) => {
+    savedSnapshot.current = null;
+    setDrawing(loaded);
+    setEditorKey((key) => key + 1);
+    setDirty(false);
+    setExternalChange(false);
+    setStatus("Saved");
+  }, []);
 
   const load = useCallback(async () => {
     setError("");
-    acceptChanges.current = false;
     try {
-      const loaded = await api("/api/drawing", {}, { module: moduleId, file: filename });
-      setDrawing(loaded);
-      setEditorKey((key) => key + 1);
-      setDirty(false);
-      setExternalChange(false);
-      setStatus("Saved");
-      window.requestAnimationFrame(() => { acceptChanges.current = true; });
+      showDrawing(await fetchDrawing());
     } catch (reason) {
       setError(reason.message);
       setStatus("Load failed");
     }
-  }, [moduleId, filename]);
+  }, [fetchDrawing, showDrawing]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -44,9 +63,21 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
     if (seenWorkspaceRevision.current === workspaceRevision) return;
     seenWorkspaceRevision.current = workspaceRevision;
     if (!drawing) return;
-    if (dirty) setExternalChange(true);
-    else load();
-  }, [workspaceRevision, dirty, drawing, load]);
+    let cancelled = false;
+    fetchDrawing()
+      .then((loaded) => {
+        if (cancelled || loaded.revision === drawing.revision) return;
+        if (dirty) setExternalChange(true);
+        else showDrawing(loaded);
+      })
+      .catch((reason) => {
+        if (!cancelled) {
+          setError(reason.message);
+          setStatus("Load failed");
+        }
+      });
+    return () => { cancelled = true; };
+  }, [workspaceRevision, dirty, drawing, fetchDrawing, showDrawing]);
 
   const save = useCallback(async () => {
     const editor = apiRef.current;
@@ -90,8 +121,9 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
             revision: drawing.revision,
           }),
         },
-        { module: moduleId, file: filename },
+        { module: moduleId, file: filename, kind: drawingKind },
       );
+      savedSnapshot.current = drawingSnapshot(elements, appState, files);
       setDrawing(saved);
       setDirty(false);
       setExternalChange(false);
@@ -100,7 +132,7 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
       setError(reason.message);
       setStatus(reason.status === 409 ? "Conflict" : "Save failed");
     }
-  }, [drawing, moduleId, filename]);
+  }, [drawing, moduleId, filename, drawingKind]);
 
   useEffect(() => {
     const keydown = (event) => {
@@ -157,7 +189,14 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
           key={editorKey}
           excalidrawAPI={(editor) => { apiRef.current = editor; }}
           initialData={initialData}
-          onChange={() => { if (acceptChanges.current) setDirty(true); }}
+          onChange={(elements, appState, files) => {
+            const snapshot = drawingSnapshot(elements, appState, files);
+            if (savedSnapshot.current === null) {
+              savedSnapshot.current = snapshot;
+              return;
+            }
+            setDirty(snapshot !== savedSnapshot.current);
+          }}
           UIOptions={{
             canvasActions: {
               changeViewBackgroundColor: false,
