@@ -8,7 +8,7 @@ it cannot target a node that was removed from the canvas.
 
 Drawings are separated by the kind of Markdown document that owns them.
 Explanation drawings remain under `.documenter/drawings/`; exploration drawings
-use `.documenter/exploration-drawings/`, with both trees mirroring crate and
+use `.documenter/exploration_drawing/`, with both trees mirroring crate and
 module paths. The drawing kind travels through creation, viewing, editing, and
 image-serving requests. Rendered Markdown also derives the storage kind from
 the link path, which keeps existing explanation-tree links usable even inside

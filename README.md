@@ -21,7 +21,7 @@ Run the checks with:
 ```sh
 cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build -p documenter-zed --target wasm32-wasip2
+cargo build -p documenter_zed --target wasm32-wasip2
 npm --prefix documenter/web test
 npm --prefix documenter/web audit --omit=dev
 ```
@@ -43,13 +43,13 @@ browser.
 ### Zed
 
 Install the native language server, then install the adapter in
-`documenter-zed` as a Zed dev extension:
+`documenter_zed` as a Zed dev extension:
 
 ```sh
 cargo install --path documenter --locked --force
 ```
 
-In Zed, run **zed: install dev extension** and select the `documenter-zed`
+In Zed, run **zed: install dev extension** and select the `documenter_zed`
 directory. Open a Rust file and invoke **Open documentation workspace** from the
 code actions menu (`Cmd+.` on macOS or `Ctrl+.` on Windows/Linux).
 
@@ -91,9 +91,16 @@ Drawings are editable SVG files with their Excalidraw scene embedded in the same
 file. They mirror the crate and module path from the repository root:
 
 ```text
-explanations -> .documenter/drawings/<crate>/<module-path>/<drawing>.svg
-explorations -> .documenter/exploration-drawings/<crate>/<module-path>/<drawing>.svg
+explanations -> .documenter/drawings/<crate>/<module_path>/<drawing>.svg
+explorations -> .documenter/exploration_drawing/<crate>/<module_path>/<drawing>.svg
 ```
+
+When updating an older workspace, rename `.documenter/exploration-drawings/`
+to `.documenter/exploration_drawing/` and update its Markdown image links.
+
+Project-owned directory, module, and crate names use underscores. The Zed
+extension directory and Cargo package are named `documenter_zed`; reinstall a
+previous dev extension from this directory after updating an older checkout.
 
 Markdown edits use **Source** and **Preview** modes. `Cmd+Enter` on macOS or
 `Ctrl+Enter` on Windows/Linux toggles them. The visible **Save** button and

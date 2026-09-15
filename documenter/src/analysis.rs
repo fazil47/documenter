@@ -59,7 +59,7 @@ impl DrawingCollection {
     fn directory(self) -> &'static str {
         match self {
             Self::Explanations => "drawings",
-            Self::Explorations => "exploration-drawings",
+            Self::Explorations => "exploration_drawing",
         }
     }
 }

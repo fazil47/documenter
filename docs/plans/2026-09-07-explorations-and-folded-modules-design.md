@@ -29,7 +29,7 @@ abstraction. Public HTTP routes remain explicit (`/api/explanation` and
 Drawings record the Markdown resource kind in their creation request so links
 are calculated relative to the correct directory. Explanation drawings use
 `.documenter/drawings/`; exploration drawings use the independently ignorable
-`.documenter/exploration-drawings/` tree.
+`.documenter/exploration_drawing/` tree.
 
 ## Project configuration and graph folding
 

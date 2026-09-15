@@ -81,7 +81,7 @@ fn documentation_input(root: &Path, path: &Path) -> bool {
         }
         Some(extension) if extension.eq_ignore_ascii_case("svg") => {
             relative.starts_with(PathBuf::from(".documenter").join("drawings"))
-                || relative.starts_with(PathBuf::from(".documenter").join("exploration-drawings"))
+                || relative.starts_with(PathBuf::from(".documenter").join("exploration_drawing"))
         }
         _ => false,
     }
@@ -130,7 +130,7 @@ mod tests {
         ));
         assert!(documentation_input(
             root,
-            Path::new("/workspace/.documenter/exploration-drawings/app/foo.svg")
+            Path::new("/workspace/.documenter/exploration_drawing/app/foo.svg")
         ));
         assert!(!documentation_input(
             root,
