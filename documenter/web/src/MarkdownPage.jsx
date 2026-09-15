@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { api, routes } from "./api.js";
 import Markdown from "./Markdown.jsx";
+import { indentMarkdown } from "./markdownIndent.js";
 import { markdownResource } from "./resources.js";
 
 function DrawingDialog({ onClose, onCreate, busy, error }) {
@@ -183,6 +185,18 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
           className="markdown-editor"
           value={content}
           onChange={(event) => { setContent(event.target.value); setDirty(event.target.value !== document.content); }}
+          onKeyDown={(event) => {
+            if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            const editor = event.currentTarget;
+            const direction = editor.selectionDirection;
+            const next = indentMarkdown(editor.value, editor.selectionStart, editor.selectionEnd, event.shiftKey);
+            flushSync(() => {
+              setContent(next.value);
+              setDirty(next.value !== document.content);
+            });
+            editor.setSelectionRange(next.start, next.end, direction);
+          }}
           spellCheck="true"
           aria-label="Markdown source"
         />
