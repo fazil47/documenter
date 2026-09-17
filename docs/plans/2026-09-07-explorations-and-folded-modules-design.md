@@ -1,5 +1,9 @@
 # Explorations and Folded Modules Design
 
+Update (2026-09-17): Root-hiding behavior described below is superseded. Every
+crate root now remains visible and clickable, and edges attach to the root
+module. Configured folding still applies to child modules.
+
 ## Goal
 
 Add module-owned rough notes without presenting them as finished Diátaxis
@@ -29,7 +33,7 @@ abstraction. Public HTTP routes remain explicit (`/api/explanation` and
 Drawings record the Markdown resource kind in their creation request so links
 are calculated relative to the correct directory. Explanation drawings use
 `.documenter/drawings/`; exploration drawings use the independently ignorable
-`.documenter/exploration_drawing/` tree.
+`.documenter/exploration_drawings/` tree.
 
 ## Project configuration and graph folding
 

@@ -1,5 +1,9 @@
 # Graph and Drawing Fixes Design
 
+Update (2026-09-17): Root-hiding behavior described below is superseded. Every
+crate root now remains visible and clickable, and edges attach to the root
+module. Configured folding still applies to child modules.
+
 The graph normally suppresses a library-only `crate root` because the crate
 container already represents it. That suppression is conditional: if every
 other module in the crate is folded, the root remains as the crate's sole
@@ -8,7 +12,7 @@ it cannot target a node that was removed from the canvas.
 
 Drawings are separated by the kind of Markdown document that owns them.
 Explanation drawings remain under `.documenter/drawings/`; exploration drawings
-use `.documenter/exploration_drawing/`, with both trees mirroring crate and
+use `.documenter/exploration_drawings/`, with both trees mirroring crate and
 module paths. The drawing kind travels through creation, viewing, editing, and
 image-serving requests. Rendered Markdown also derives the storage kind from
 the link path, which keeps existing explanation-tree links usable even inside

@@ -1061,11 +1061,11 @@ mod tests {
         assert_eq!(exploration_drawing.1["filename"], "render_graph.svg");
         assert_eq!(
             exploration_drawing.1["markdown"],
-            "![Render Graph](../../../.documenter/exploration_drawing/sample/engine/render_graph.svg)"
+            "![Render Graph](../../../.documenter/exploration_drawings/sample/engine/render_graph.svg)"
         );
         let exploration_drawing_path = project
             .path()
-            .join(".documenter/exploration_drawing/sample/engine/render_graph.svg");
+            .join(".documenter/exploration_drawings/sample/engine/render_graph.svg");
         assert!(has_embedded_scene(
             &fs::read_to_string(exploration_drawing_path).unwrap()
         ));

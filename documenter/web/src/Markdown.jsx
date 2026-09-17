@@ -9,7 +9,7 @@ function render(text, module, markdownDocument, kind) {
   const document = new DOMParser().parseFromString(sanitized, "text/html");
   for (const image of document.querySelectorAll("img")) {
     const source = image.getAttribute("src") || "";
-    const drawingKind = source.includes(".documenter/exploration_drawing/")
+    const drawingKind = source.includes(".documenter/exploration_drawings/")
       ? "exploration"
       : source.includes(".documenter/drawings/") ? "explanation" : null;
     if (!drawingKind) continue;

@@ -86,7 +86,7 @@ Drawings are owned centrally by the repository and mirror their module paths:
 
 ```text
 explanations -> <repo-root>/.documenter/drawings/<crate>/<module_path>/<drawing_name>.svg
-explorations -> <repo-root>/.documenter/exploration_drawing/<crate>/<module_path>/<drawing_name>.svg
+explorations -> <repo-root>/.documenter/exploration_drawings/<crate>/<module_path>/<drawing_name>.svg
 ```
 
 For a crate-root module, the path stops at the crate name. The server computes the relative link from the Markdown file to the drawing so ordinary Markdown renderers can display it.
@@ -107,7 +107,7 @@ A clean page reloads changed content automatically. A dirty Markdown or drawing 
 
 The browser sends module, explanation, and drawing identifiers rather than arbitrary filesystem paths. The server resolves them against its analyzed workspace model.
 
-Markdown writes are limited to discovered file-backed modules' `explanations/` and `explorations/` directories. Explanation drawing writes are limited to `<repo-root>/.documenter/drawings/`, while exploration drawing writes are limited to `<repo-root>/.documenter/exploration_drawing/`. Canonical-path validation rejects absolute paths, `..`, symlink escapes, unsupported extensions, and oversized request bodies. Writes use a temporary sibling file followed by atomic replacement.
+Markdown writes are limited to discovered file-backed modules' `explanations/` and `explorations/` directories. Explanation drawing writes are limited to `<repo-root>/.documenter/drawings/`, while exploration drawing writes are limited to `<repo-root>/.documenter/exploration_drawings/`. Canonical-path validation rejects absolute paths, `..`, symlink escapes, unsupported extensions, and oversized request bodies. Writes use a temporary sibling file followed by atomic replacement.
 
 All APIs require the per-session token. Responses disable external referrers, and the application loads no runtime resources from the internet.
 

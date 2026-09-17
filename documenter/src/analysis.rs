@@ -5,7 +5,7 @@ mod cfg;
 mod rust;
 mod settings;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -27,7 +27,6 @@ struct Module {
     name: String,
     docs: String,
     file_backed: bool,
-    library_only_root: bool,
     folded: bool,
     explanations: Vec<MarkdownFile>,
     explorations: Vec<MarkdownFile>,
@@ -59,7 +58,7 @@ impl DrawingCollection {
     fn directory(self) -> &'static str {
         match self {
             Self::Explanations => "drawings",
-            Self::Explorations => "exploration_drawing",
+            Self::Explorations => "exploration_drawings",
         }
     }
 }
@@ -76,16 +75,10 @@ impl Workspace {
     ) -> Result<Self> {
         let root = cargo::find_root(start)?;
         let packages = cargo::discover_packages(&root)?;
-        let library_only_roots = packages
-            .iter()
-            .filter(|package| package.lib_rs.is_some() && package.main_rs.is_none())
-            .map(cargo::Package::crate_root)
-            .collect::<HashSet<_>>();
         let cfg = cfg::CfgSet::for_target(None)?;
         let settings = settings::Settings::load(&root)?;
         let mut analysis = rust::analyze(&packages, &cfg, documents)?;
         for module in &mut analysis.modules {
-            module.library_only_root = library_only_roots.contains(&module.id);
             module.folded = module.id.contains("::") && settings.folds(&module.name);
         }
         Ok(Self {
@@ -215,7 +208,6 @@ mod tests {
         let inline = workspace.module("sample_app::inline").unwrap();
 
         assert_eq!(root.docs, "Crate docs.");
-        assert!(root.library_only_root);
         assert!(engine.file_backed);
         assert_eq!(engine.docs, "Engine docs.");
         assert_eq!(engine.explanations[0].title, "Frame Loop");
@@ -223,37 +215,6 @@ mod tests {
         assert!(!inline.file_backed);
         assert!(inline.explanation_dir.is_none());
         assert!(inline.exploration_dir.is_none());
-    }
-
-    #[test]
-    fn does_not_mark_a_binary_root_as_library_only() {
-        let temp = tempdir().unwrap();
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            "[package]\nname = \"sample-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .unwrap();
-        fs::create_dir(temp.path().join("src")).unwrap();
-        fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-
-        let workspace = Workspace::load(temp.path()).unwrap();
-        assert!(!workspace.module("sample_app").unwrap().library_only_root);
-    }
-
-    #[test]
-    fn keeps_a_root_for_a_package_with_library_and_binary_targets() {
-        let temp = tempdir().unwrap();
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            "[package]\nname = \"sample-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .unwrap();
-        fs::create_dir(temp.path().join("src")).unwrap();
-        fs::write(temp.path().join("src/lib.rs"), "pub fn run() {}\n").unwrap();
-        fs::write(temp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
-
-        let workspace = Workspace::load(temp.path()).unwrap();
-        assert!(!workspace.module("sample_app").unwrap().library_only_root);
     }
 
     #[test]

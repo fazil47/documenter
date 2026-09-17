@@ -50,9 +50,9 @@ describe("graphElements", () => {
     expect(elements.filter((element) => element.data.source)).toHaveLength(0);
   });
 
-  it("absorbs library-only roots into non-clickable crate containers", () => {
+  it("keeps crate roots and their edges alongside visible children", () => {
     const workspace = {
-      modules: [module("engine", false, true), module("engine::render", false)],
+      modules: [module("engine", false), module("engine::render", false)],
       edges: [edge("engine", "engine::render"), edge("engine::render", "engine")],
     };
 
@@ -66,10 +66,10 @@ describe("graphElements", () => {
       .map((element) => [element.data.source, element.data.target]);
 
     expect(container.data.moduleId).toBeUndefined();
-    expect(nodes).toEqual(["engine::render"]);
+    expect(nodes).toEqual(["engine", "engine::render"]);
     expect(edges).toEqual([
-      ["__crate__engine", "engine::render"],
-      ["engine::render", "__crate__engine"],
+      ["engine", "engine::render"],
+      ["engine::render", "engine"],
     ]);
   });
 
@@ -85,7 +85,7 @@ describe("graphElements", () => {
   it("keeps a library crate root when folding leaves its crate empty", () => {
     const workspace = {
       modules: [
-        module("renderer_wgpu", false, true),
+        module("renderer_wgpu", false),
         module("renderer_wgpu::interface", true),
         module("renderer_wgpu::internal", true),
       ],
@@ -105,13 +105,12 @@ describe("graphElements", () => {
   });
 });
 
-function module(id, folded, libraryOnlyRoot = false) {
+function module(id, folded) {
   return {
     id,
     name: id.split("::").at(-1),
     crate_name: id.split("::")[0],
     file_backed: true,
-    library_only_root: libraryOnlyRoot,
     folded,
   };
 }

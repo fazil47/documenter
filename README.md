@@ -81,22 +81,20 @@ This matches `crate::interface` and `crate::render_api::interface`, but not
 `crate::interfaces`. Folding affects only the graph; every module remains in the
 analyzed workspace and keeps its details route.
 
-Library-only roots backed by `lib.rs` are represented by their non-clickable
-crate container rather than a redundant inner `crate root` node. Packages with
-`main.rs` retain a visible `crate root` node, including packages that also have
-`lib.rs`. If folding would leave a library crate with no visible module nodes,
-its `crate root` is retained as the useful fallback.
+Every crate retains a visible, clickable `crate root` node, including libraries
+with visible child modules. Configured folding applies only to child modules;
+root documentation remains accessible from the graph.
 
 Drawings are editable SVG files with their Excalidraw scene embedded in the same
 file. They mirror the crate and module path from the repository root:
 
 ```text
 explanations -> .documenter/drawings/<crate>/<module_path>/<drawing>.svg
-explorations -> .documenter/exploration_drawing/<crate>/<module_path>/<drawing>.svg
+explorations -> .documenter/exploration_drawings/<crate>/<module_path>/<drawing>.svg
 ```
 
 When updating an older workspace, rename `.documenter/exploration-drawings/`
-to `.documenter/exploration_drawing/` and update its Markdown image links.
+to `.documenter/exploration_drawings/` and update its Markdown image links.
 
 Project-owned directory, module, and crate names use underscores. The Zed
 extension directory and Cargo package are named `documenter_zed`; reinstall a
