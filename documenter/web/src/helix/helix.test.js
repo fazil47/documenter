@@ -413,3 +413,20 @@ describe("goto word", () => {
     expect(editor("⟨o⟩ne two").keys("gw1").state).toBe("⟨o⟩ne two");
   });
 });
+
+describe("jumps", () => {
+  it("moves through the jumplist, then asks the page for other files", () => {
+    const session = editor("⟨a⟩\nb\nc\n").keys("G<C-o>");
+    expect(session.state).toBe("⟨a⟩\nb\nc\n");
+    expect(session.keys("<Tab>").state).toBe("a\nb\n⟨c⟩\n");
+    expect(session.keys("<C-i>").doc.last.command).toEqual({ type: "jumpFile", direction: 1 });
+    expect(session.keys("<C-o><C-o>").doc.last.command).toEqual({ type: "jumpFile", direction: -1 });
+  });
+
+  it("leaves arrivals out of the jumplist", () => {
+    const session = editor("⟨a⟩\nb\n");
+    const target = { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } };
+    session.doc.selections = session.helix.jumpTo(target, { text: session.doc.value, selections: session.doc.selections }, { record: false }).selections;
+    expect(session.keys("<C-o>").doc.last.command).toEqual({ type: "jumpFile", direction: -1 });
+  });
+});

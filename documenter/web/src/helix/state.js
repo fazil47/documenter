@@ -70,10 +70,10 @@ export class Engine {
   }
 
   // Select `target` ({ start, end } positions) after a navigation, recording the jump.
-  jumpTo(target, snapshot) {
+  jumpTo(target, snapshot, { record = true } = {}) {
     const text = new Text(snapshot.text);
     const cx = new Context(this, text, this.readSelection(text, snapshot.selections ?? []));
-    this.pushJump(cx);
+    if (record) this.pushJump(cx);
     cx.select([{ anchor: text.offsetAt(target.start), head: text.offsetAt(target.end) }], 0);
     return this.finish(cx, true);
   }
@@ -273,13 +273,20 @@ export class Engine {
     this.jumpIndex = this.jumps.length;
   }
 
+  // Past either end of this file's jumps, the page continues into other files.
   jump(cx, direction) {
     if (direction < 0) {
       if (this.jumpIndex === this.jumps.length) this.jumps.push({ ranges: cx.ranges, primary: cx.primary });
-      if (this.jumpIndex === 0) return;
+      if (this.jumpIndex === 0) {
+        cx.command({ type: "jumpFile", direction });
+        return;
+      }
       this.jumpIndex -= 1;
     } else {
-      if (this.jumpIndex >= this.jumps.length - 1) return;
+      if (this.jumpIndex >= this.jumps.length - 1) {
+        cx.command({ type: "jumpFile", direction });
+        return;
+      }
       this.jumpIndex += 1;
     }
     const target = this.jumps[this.jumpIndex];

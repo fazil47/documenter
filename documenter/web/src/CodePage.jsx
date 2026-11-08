@@ -32,16 +32,39 @@ const NAVIGATION_LABELS = {
   references: "references",
 };
 
-// A position to select on arrival, from a navigation in another module.
+// The selection to restore on load: a goto target from another module, or the
+// selection this history entry had when a jump left it.
 function arrivalTarget() {
   const params = new URLSearchParams(window.location.search);
-  if (!params.has("line")) return undefined;
+  if (!params.has("line")) return window.history.state?.helixSelection;
   const number = (name, fallback) => Number(params.get(name) ?? fallback) || 0;
   return {
     start: { line: number("line"), character: number("character") },
     end: { line: number("endLine", params.get("line")), character: number("endCharacter", params.get("character")) },
   };
 }
+
+// Jumps across modules live in browser history: each entry remembers its
+// selection and whether an older or newer jump surrounds it.
+function rememberInHistory(values, url = undefined) {
+  window.history.replaceState({ ...window.history.state, ...values }, "", url);
+}
+
+// Other ways out of the page replace any newer jump in history.
+function leavePage(url, leaving) {
+  rememberInHistory({ helixNewer: false });
+  leaving.current = true;
+  window.location.assign(url);
+}
+
+// The primary selection as a goto target, its head at `end`.
+function selectionTarget(editor) {
+  const selections = editor?.getViewState().selections ?? [];
+  const primary = selections[selections.length - 1];
+  if (!primary) return undefined;
+  return primary.direction === -1 ? { start: primary.end, end: primary.start } : { start: primary.start, end: primary.end };
+}
+
 const MODE_LABELS = { normal: "NOR", insert: "INS", select: "SEL" };
 
 function storedHelix() {
@@ -219,8 +242,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       setExternalChange(false);
       setStatus("Saved");
       if (quitAfterSave.current) {
-        leaving.current = true;
-        window.location.assign(routes.module(moduleId));
+        leavePage(routes.module(moduleId), leaving);
       }
     } catch (reason) {
       quitAfterSave.current = false;
@@ -300,7 +322,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       return undefined;
     }
     if (current.current.dirty) return "unsaved changes; save with :w before leaving this file";
-    leaving.current = true;
+    rememberInHistory({ helixSelection: selectionTarget(current.current.editor), helixNewer: true });
     window.location.assign(routes.code(location.module, {
       line: target.start.line,
       character: target.start.character,
@@ -342,8 +364,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     // Returns an error for the Helix status line when the command cannot run.
     const leave = (force) => {
       if (dirty && !force) return "unsaved changes; use :q! to discard them or :wq to save first";
-      leaving.current = true;
-      window.location.assign(routes.module(moduleId));
+      leavePage(routes.module(moduleId), leaving);
       return undefined;
     };
     if (command.type === "write") {
@@ -356,6 +377,12 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       load();
     } else if (command.type === "navigate") {
       navigate(command);
+    } else if (command.type === "jumpFile") {
+      const state = window.history.state ?? {};
+      if (!(command.direction < 0 ? state.helixOlder : state.helixNewer)) return undefined;
+      if (dirty) return "unsaved changes; save with :w before leaving this file";
+      rememberInHistory({ helixSelection: selectionTarget(current.current.editor) });
+      window.history.go(command.direction);
     }
     return undefined;
   }, [dirty, save, load, moduleId, navigate]);
@@ -370,15 +397,31 @@ export default function CodePage({ moduleId, workspaceRevision }) {
   helixActions.current = actions;
 
   useEffect(() => {
-    if (!editor || !arrival.current) return;
+    if (!editor || !arrival.current) return undefined;
     editor.focus();
-    if (helixEnabled) actions.jumpTo(arrival.current);
-    else editor.setViewState({ selections: [{ ...arrival.current, direction: 1 }] });
-    arrival.current = undefined;
-    const url = new URL(window.location.href);
-    for (const name of ["line", "character", "endLine", "endCharacter"]) url.searchParams.delete(name);
-    window.history.replaceState(null, "", url);
+    // Pierre places its caret when focused, so select the target on the next frame.
+    // Arriving is not a jump within this file, so C-o goes straight back to the previous one.
+    const frame = requestAnimationFrame(() => {
+      const target = arrival.current;
+      arrival.current = undefined;
+      if (helixEnabled) actions.jumpTo(target, { record: false });
+      else editor.setViewState({ selections: [{ ...target, direction: 1 }] });
+      const url = new URL(window.location.href);
+      if (!url.searchParams.has("line")) return;
+      for (const name of ["line", "character", "endLine", "endCharacter"]) url.searchParams.delete(name);
+      rememberInHistory({ helixOlder: true }, url);
+    });
+    return () => cancelAnimationFrame(frame);
   }, [editor, helixEnabled, actions]);
+
+  // A page restored from the back-forward cache is not leaving anymore.
+  useEffect(() => {
+    const pageshow = (event) => {
+      if (event.persisted) leaving.current = false;
+    };
+    window.addEventListener("pageshow", pageshow);
+    return () => window.removeEventListener("pageshow", pageshow);
+  }, []);
 
   const toggleHelix = () => {
     setHelixEnabled((current) => {
@@ -396,8 +439,8 @@ export default function CodePage({ moduleId, workspaceRevision }) {
   return (
     <main className="code-page">
       <header className="topbar editor-toolbar">
-        <a className="brand" href={routes.graph()}>documenter</a>
-        <a className="back-link" href={routes.module(moduleId)}>← {moduleId}</a>
+        <a className="brand" href={routes.graph()} onClick={() => rememberInHistory({ helixNewer: false })}>documenter</a>
+        <a className="back-link" href={routes.module(moduleId)} onClick={() => rememberInHistory({ helixNewer: false })}>← {moduleId}</a>
         <button className={helixEnabled ? "toggle active" : "toggle"} type="button" aria-pressed={helixEnabled} onClick={toggleHelix}>Helix</button>
         <button className="primary" type="button" onClick={save} disabled={!dirty || !editing}>Save</button>
         <span className={`save-status ${error ? "error" : ""}`}>{error || status}</span>

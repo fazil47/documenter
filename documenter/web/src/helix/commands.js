@@ -764,6 +764,7 @@ export const KEYMAP = {
   "C-d": vertical(1, "half"),
   "C-o": (cx) => cx.state.jump(cx, -1),
   "C-i": (cx) => cx.state.jump(cx, 1),
+  Tab: (cx) => cx.state.jump(cx, 1),
 
   g: {
     g: (cx) => gotoLine(cx, cx.hasCount ? cx.count - 1 : 0),

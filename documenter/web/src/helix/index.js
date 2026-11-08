@@ -18,9 +18,9 @@ export class HelixState {
     return this.#engine.handleKey(key, snapshot, options);
   }
 
-  // Selects a navigation target in the current file, recording a jump.
-  jumpTo(target, snapshot) {
-    return this.#engine.jumpTo(target, snapshot);
+  // Selects a navigation target in the current file, recording a jump unless `record` is false.
+  jumpTo(target, snapshot, options) {
+    return this.#engine.jumpTo(target, snapshot, options);
   }
 
   // Finishes a `pasteClipboard` command with the clipboard's text.

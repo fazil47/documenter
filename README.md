@@ -139,8 +139,9 @@ status line shows its progress while it indexes:
 
 A single result jumps directly, opening another module's source page if needed.
 Several results open a picker: type to filter, use the arrow keys or
-`C-n`/`C-p` to move, and press `Enter` to open a result. `C-o` returns from
-jumps within a file, and the browser's back button returns across files.
+`C-n`/`C-p` to move, and press `Enter` to open a result. `C-o` jumps back and
+`C-i` (or `Tab`) jumps forward, across files too, restoring the selection in
+each. The browser's back button also returns to the position you jumped from.
 
 Features that need a terminal or other editor services are left out: file
 pickers, splits, the other language-server commands, tree-sitter text objects,
