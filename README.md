@@ -127,8 +127,8 @@ Rust file with syntax highlighting and edits it in place. Saving uses the same
 The source page's **Helix** toggle turns on Helix-style modal editing. The
 setting is remembered in that browser. It supports normal, insert, and select
 modes, counts, registers, macros, `.` repeat, search, multiple selections, match
-mode (`m`), and a `:` command line (`:w`, `:q`, `:wq`, `:reload`, `:sort`, and
-more).
+mode (`m`), `gw` jump labels, and a `:` command line (`:w`, `:q`, `:wq`,
+`:reload`, `:sort`, and more).
 
 Helix's language-server goto keys use rust-analyzer when it is on `PATH`, which
 documenter starts on first use the way Helix does:

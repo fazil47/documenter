@@ -4,7 +4,7 @@ import { Context, KEYMAP, pasteValues } from "./commands.js";
 import { insertKey } from "./insert.js";
 import { submitPrompt } from "./prompt.js";
 import { keyCharacter } from "./keys.js";
-import { caret, from, isForward, normalize, point, to } from "./selection.js";
+import { caret, from, isForward, normalize, point, putCursor, to } from "./selection.js";
 import { Text } from "./text.js";
 
 const PROMPT_LABELS = {
@@ -38,6 +38,7 @@ export class Engine {
     this.fileName = "";
     this.pageLines = 30;
     this.visibleLines = undefined;
+    this.labels = undefined;
   }
 
   // `snapshot` is `{ text, selections, fileName, pageLines, visibleLines }`,
@@ -50,6 +51,7 @@ export class Engine {
     if (this.recording && !replaying) this.recording.keys.push(key);
     const text = new Text(snapshot.text);
     const selection = this.readSelection(text, snapshot.selections ?? []);
+    if (this.labels) return this.labelKey(key, text, selection);
     if (this.prompt) return this.promptKey(key, text, selection);
     if (this.mode === "insert") {
       const cx = new Context(this, text, selection, { replaying });
@@ -157,6 +159,33 @@ export class Engine {
     return this.status(true);
   }
 
+  // The second letter of a `gw` label jumps; any other key, or a changed text, cancels.
+  labelKey(key, text, selection) {
+    const typed = this.labels.typed + key;
+    const current = text.value === this.labels.text;
+    const matching = current && /^[a-z]$/u.test(key)
+      ? this.labels.targets.filter((target) => target.label.startsWith(typed))
+      : [];
+    if (matching.length === 0) {
+      this.labels = undefined;
+      return this.status(true);
+    }
+    if (typed.length < 2) {
+      this.labels.typed = typed;
+      return this.status(true);
+    }
+    this.labels = undefined;
+    const [target] = matching;
+    const cx = new Context(this, text, selection);
+    this.pushJump(cx);
+    const primary = cx.ranges[cx.primary];
+    const range = cx.extend
+      ? putCursor(text, primary, target.from >= primary.anchor ? target.to - 1 : target.from, true)
+      : { anchor: target.from, head: target.to };
+    cx.select([range], 0);
+    return this.finish(cx, true);
+  }
+
   cancel() {
     this.pending = emptyPending();
     return this.status(true);
@@ -219,6 +248,10 @@ export class Engine {
       prompt: this.prompt ? { label: PROMPT_LABELS[this.prompt.kind], text: this.prompt.text } : undefined,
       message: this.message,
       recording: this.recording?.register,
+      // Labels still matching what was typed, as positions and the letters left to type.
+      labels: this.labels?.targets
+        .filter((target) => target.label.startsWith(this.labels.typed))
+        .map((target) => ({ line: target.line, character: target.character, text: target.label.slice(this.labels.typed.length) })),
     };
   }
 

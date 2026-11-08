@@ -13,6 +13,14 @@ const fileOptions = {
   // The rest of the workspace UI is dark-only.
   themeType: "dark",
   preferredHighlighter: "shiki-js",
+  // Lets Helix mode turn Pierre's caret into a block cursor through inherited variables.
+  // Pierre's own rules are unlayered, so these layered overrides need !important.
+  unsafeCSS: `[data-caret] {
+    width: var(--helix-caret-width, 2px) !important;
+    translate: var(--helix-caret-shift, 0 0);
+    z-index: var(--helix-caret-layer, 2) !important;
+    animation-name: var(--helix-caret-animation, blinking) !important;
+  }`,
 };
 
 const HELIX_STORAGE_KEY = "documenter.helix";
@@ -352,6 +360,13 @@ export default function CodePage({ moduleId, workspaceRevision }) {
             onEditComplete={onEditComplete}
           />
         </EditProvider>
+        {helixEnabled && helixStatus.labels?.length > 0 && (
+          <div className="helix-labels" aria-hidden="true">
+            {helixStatus.labels.map(({ text, left, top, width, height, font }) => (
+              <span key={`${left}:${top}`} style={{ left, top, width, height, font, fontWeight: 700, lineHeight: `${height}px` }}>{text}</span>
+            ))}
+          </div>
+        )}
       </div>
       {helixEnabled && <HelixStatus status={helixStatus} />}
       {picker && (

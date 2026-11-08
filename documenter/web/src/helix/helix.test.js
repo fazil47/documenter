@@ -67,7 +67,7 @@ function editor(marked, { clipboard = "" } = {}) {
     }
     if (result.selections) doc.selections = result.selections;
   };
-  const snapshot = () => ({ text: doc.value, selections: doc.selections, fileName: "src/lib.rs", pageLines: 4 });
+  const snapshot = () => ({ text: doc.value, selections: doc.selections, fileName: "src/lib.rs", pageLines: 4, visibleLines: { first: 0, last: 100 } });
   const press = (key, replaying = false) => {
     const result = helix.handleKey(key, snapshot(), { replaying });
     doc.last = result;
@@ -390,5 +390,26 @@ describe("command line", () => {
     session.keys("<Backspace><Backspace><Backspace>");
     expect(session.doc.last.prompt).toBeUndefined();
     expect(editor("⟨a⟩").keys(":nope<Enter>").doc.last.message.error).toBe(true);
+  });
+});
+
+describe("goto word", () => {
+  it("labels visible words outward from the cursor, forward first", () => {
+    const labels = editor("one :: two ⟨t⟩hree four five").keys("gw").doc.last.labels;
+    expect(labels.map((label) => [label.character, label.text])).toEqual([[17, "aa"], [11, "ab"], [22, "ac"], [7, "ad"], [0, "ae"]]);
+  });
+
+  it("selects the labelled word, or extends to it in select mode", () => {
+    expect(editor("⟨o⟩ne two three").keys("gwaa").state).toBe("one ⟨two⟩ three");
+    expect(editor("⟨o⟩ne two three").keys("vgwaa").state).toBe("⟨one two⟩ three");
+    expect(editor("aa ⟨bbb⟩ cc").keys("vgwac").state).toBe("⟨aa b⟩bb cc");
+  });
+
+  it("narrows labels after the first letter and cancels on other keys", () => {
+    const words = Array.from({ length: 30 }, (_, index) => `w${index}`).join(" ");
+    const session = editor(`⟨x⟩ ${words}`).keys("gwb");
+    expect(session.doc.last.labels.map((label) => label.text)).toEqual(["a", "b", "c", "d"]);
+    expect(session.keys("<Esc>").doc.last.labels).toBeUndefined();
+    expect(editor("⟨o⟩ne two").keys("gw1").state).toBe("⟨o⟩ne two");
   });
 });

@@ -89,8 +89,17 @@ input:focus, textarea:focus { border-color: #76aee6; box-shadow: 0 0 0 3px rgb(1
 .conflict-banner { display: flex; justify-content: center; align-items: center; gap: 1rem; padding: 0.55rem 1rem; color: #ffd6a2; background: #352819; border-bottom: 1px solid #634b2c; font-size: 0.86rem; }
 
 .source-link { display: inline-block; margin: -2rem 0 1rem; font-size: 0.88rem; }
-.code-editor { flex: 1; min-height: 0; overflow: auto; }
-.code-editor.helix-normal, .code-editor.helix-select { caret-color: transparent; }
+.code-editor { position: relative; flex: 1; min-height: 0; overflow: auto; }
+.helix-labels span { position: absolute; z-index: 10; overflow: hidden; color: #ff7aa8; background: #0a0a0a; pointer-events: none; }
+.code-editor.helix-normal, .code-editor.helix-select {
+  caret-color: transparent;
+  /* A block on the character under the head, drawn behind the text. */
+  --helix-caret-width: 1ch;
+  --helix-caret-shift: var(--helix-head-shift, 0 0);
+  --helix-caret-layer: -5;
+  --helix-caret-animation: none;
+  --diffs-bg-caret-override: #dce5ef73;
+}
 button.toggle.active { color: #111820; background: #d8e6f4; border-color: #d8e6f4; }
 .helix-status { display: flex; align-items: center; gap: 0.8rem; min-height: 1.9rem; padding: 0.2rem 0.8rem; background: #141b24; border-top: 1px solid #283544; font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; color: #a9b8c7; }
 .helix-mode { min-width: 2.6rem; padding: 0.05rem 0.4rem; text-align: center; font-weight: 700; color: #111820; background: #8ec5ff; border-radius: 4px; }

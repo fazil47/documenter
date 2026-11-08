@@ -20,6 +20,7 @@ import {
   rangeText,
   to,
 } from "./selection.js";
+import { wordLabels } from "./labels.js";
 import { ChangeSet, Text, isBlank, isWhitespace, isWordChar } from "./text.js";
 
 // Command context ---------------------------------------------------------
@@ -697,6 +698,17 @@ function windowLine(position) {
   };
 }
 
+// Shows jump labels; the engine reads the next two keys as a label.
+function gotoWord(cx) {
+  const visible = cx.state.visibleLines;
+  if (!visible) {
+    cx.message("the visible lines are unknown", true);
+    return;
+  }
+  const targets = wordLabels(cx.text, visible, cursor(cx.ranges[cx.primary]));
+  if (targets.length > 0) cx.state.labels = { targets, typed: "", text: cx.text.value };
+}
+
 const VIEW = {
   z: scrollTo("center"),
   c: scrollTo("center"),
@@ -777,7 +789,7 @@ export const KEYMAP = {
     a: unsupported("there is only one file open"),
     n: unsupported("there is only one file open"),
     p: unsupported("there is only one file open"),
-    w: unsupported("goto word labels are not available in the browser editor"),
+    w: gotoWord,
   },
 
   x: (cx) => cx.move((range) => {
