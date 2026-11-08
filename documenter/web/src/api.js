@@ -36,7 +36,7 @@ function href(path, values = {}) {
   const url = new URL(path, window.location.origin);
   url.searchParams.set("token", token);
   for (const [key, value] of Object.entries(values)) {
-    if (value) url.searchParams.set(key, value);
+    if (value || value === 0) url.searchParams.set(key, value);
   }
   return `${url.pathname}${url.search}`;
 }
@@ -44,7 +44,7 @@ function href(path, values = {}) {
 export const routes = {
   graph: () => href("/"),
   module: (module) => href(`/modules/${encodeURIComponent(module)}`),
-  code: (module) => href(`/code/${encodeURIComponent(module)}`),
+  code: (module, values = {}) => href(`/code/${encodeURIComponent(module)}`, values),
   markdown: (kind, module, file) => {
     const resource = markdownResource(kind);
     return href(`/${resource.path}/${encodeURIComponent(module)}/${encodeURIComponent(file)}`);

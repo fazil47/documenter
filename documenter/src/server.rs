@@ -1,5 +1,6 @@
 //! Local documentation server and repository write boundary.
 
+mod rust_analyzer;
 mod storage;
 mod watch;
 
@@ -27,6 +28,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
+use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer};
 use self::storage::atomic_write;
 use crate::analysis::{DrawingCollection, Workspace, markdown_title};
 use crate::drawing::{
@@ -61,6 +63,7 @@ struct AppState {
     revisions: broadcast::Sender<u64>,
     documents: RwLock<HashMap<PathBuf, String>>,
     scheduled_refresh: StdMutex<Option<JoinHandle<()>>>,
+    rust_analyzer: RustAnalyzer,
 }
 
 struct ModelState {
@@ -96,6 +99,7 @@ impl DocumentationServer {
             revisions,
             documents: RwLock::new(normalize_documents(&root, documents)),
             scheduled_refresh: StdMutex::new(None),
+            rust_analyzer: RustAnalyzer::new(root.clone()),
         });
         let watcher = watch::WorkspaceWatcher::start(&root, Arc::downgrade(&state))?;
         Ok(Self {
@@ -272,6 +276,7 @@ fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/explorations", post(create_exploration))
         .route("/api/source", get(get_source).put(put_source))
+        .route("/api/navigate", post(navigate))
         .route("/api/drawing", get(get_drawing).put(put_drawing))
         .route("/api/drawings", post(create_drawing))
         .route("/api/drawing-file", get(get_drawing_file))
@@ -556,6 +561,95 @@ async fn put_source(
         revision: content_revision(&body.content),
         content: body.content,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct NavigateRequest {
+    module: String,
+    kind: NavigationKind,
+    line: u32,
+    character: u32,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct NavigateResponse {
+    locations: Vec<LocationResponse>,
+}
+
+#[derive(Serialize)]
+struct LocationResponse {
+    path: String,
+    module: Option<String>,
+    line: u32,
+    character: u32,
+    end_line: u32,
+    end_character: u32,
+    preview: String,
+}
+
+async fn navigate(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+    Json(body): Json<NavigateRequest>,
+) -> ApiResult<Json<NavigateResponse>> {
+    state.authorize(&query.token)?;
+    let path = source_path(&state, &body.module).await?;
+    ensure_safe_existing_file(&state.root, &path)?;
+    let locations = state
+        .rust_analyzer
+        .navigate(body.kind, &path, &body.content, (body.line, body.character))
+        .await
+        .map_err(|error| match error {
+            NavigationError::NotInstalled => ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rust-analyzer is not installed; install it with `rustup component add rust-analyzer`",
+            ),
+            NavigationError::Indexing => ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "rust-analyzer is still indexing; try again in a moment",
+            ),
+            NavigationError::Failed(message) => ApiError::new(StatusCode::BAD_GATEWAY, message),
+        })?;
+    let mut files = HashMap::new();
+    let mut previews = Vec::with_capacity(locations.len());
+    for location in &locations {
+        if !files.contains_key(&location.path) {
+            let text = if location.path == path {
+                body.content.clone()
+            } else {
+                tokio::fs::read_to_string(&location.path)
+                    .await
+                    .unwrap_or_default()
+            };
+            files.insert(location.path.clone(), text);
+        }
+        let preview = files[&location.path]
+            .lines()
+            .nth(location.start.0 as usize)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        previews.push(preview);
+    }
+    let model = state.model.read().await;
+    let locations = locations
+        .into_iter()
+        .zip(previews)
+        .map(|(location, preview)| LocationResponse {
+            path: display_path(&state.root, &location.path),
+            module: model
+                .workspace
+                .module_for_source(&location.path)
+                .map(str::to_owned),
+            line: location.start.0,
+            character: location.start.1,
+            end_line: location.end.0,
+            end_character: location.end.1,
+            preview,
+        })
+        .collect();
+    Ok(Json(NavigateResponse { locations }))
 }
 
 #[derive(Serialize)]
@@ -1238,6 +1332,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn navigates_to_definitions_in_other_modules_with_rust_analyzer() {
+        if std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .output()
+            .map_or(true, |output| !output.status.success())
+        {
+            eprintln!("skipping: rust-analyzer is not installed");
+            return;
+        }
+        let project = sample_project();
+        let lib = "mod engine;\npub fn start() -> engine::Engine {\n    engine::Engine\n}\n";
+        fs::write(project.path().join("src/lib.rs"), lib).unwrap();
+        let app = test_router(project.path());
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+        let response = loop {
+            let response = json_request(
+                &app,
+                "POST",
+                "/api/navigate?token=test-token",
+                serde_json::json!({
+                    "module": "sample",
+                    "kind": "definition",
+                    "line": 2,
+                    "character": 13,
+                    "content": lib,
+                }),
+            )
+            .await;
+            let indexing = response.0 == StatusCode::SERVICE_UNAVAILABLE
+                && response.1["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("indexing"));
+            if indexing && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+            break response;
+        };
+        assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+        let location = &response.1["locations"][0];
+        assert_eq!(location["path"], "src/engine.rs");
+        assert_eq!(location["module"], "sample::engine");
+        assert_eq!(location["line"], 0);
+        assert_eq!(location["preview"], "pub struct Engine;");
+    }
+
+    #[tokio::test]
     async fn unsaved_rust_documents_refresh_the_workspace_after_a_debounce() {
         let project = sample_project();
         let server = DocumentationServer::new(project.path().to_path_buf(), HashMap::new())
@@ -1281,9 +1422,10 @@ mod tests {
 
     fn test_router_with_documents(root: &Path, documents: HashMap<PathBuf, String>) -> Router {
         let workspace = Workspace::load_with_documents(root, &documents).unwrap();
+        let root = workspace.root().to_path_buf();
         let (revisions, _) = broadcast::channel(8);
         router(Arc::new(AppState {
-            root: workspace.root().to_path_buf(),
+            root: root.clone(),
             token: "test-token".to_owned(),
             model: RwLock::new(ModelState {
                 revision: 1,
@@ -1291,8 +1433,9 @@ mod tests {
             }),
             refresh: Mutex::new(()),
             revisions,
-            documents: RwLock::new(normalize_documents(root, documents)),
+            documents: RwLock::new(normalize_documents(&root, documents)),
             scheduled_refresh: StdMutex::new(None),
+            rust_analyzer: RustAnalyzer::new(root),
         }))
     }
 

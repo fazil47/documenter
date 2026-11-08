@@ -1,0 +1,30 @@
+// Helix-style modal editing over a plain text snapshot. See docs/plans/2026-11-08-helix-keybindings-design.md.
+
+import { Engine } from "./state.js";
+
+export { keyFromEvent } from "./keys.js";
+
+// The engine's public face: keys and clipboard text in, edits and selections out.
+export class HelixState {
+  #engine = new Engine();
+
+  get mode() {
+    return this.#engine.mode;
+  }
+
+  // `snapshot` is `{ text, selections, fileName, pageLines, visibleLines }` with
+  // Pierre selections. Results list the primary selection last, as Pierre does.
+  handleKey(key, snapshot, options) {
+    return this.#engine.handleKey(key, snapshot, options);
+  }
+
+  // Selects a navigation target in the current file, recording a jump.
+  jumpTo(target, snapshot) {
+    return this.#engine.jumpTo(target, snapshot);
+  }
+
+  // Finishes a `pasteClipboard` command with the clipboard's text.
+  pasteText(value, snapshot, command) {
+    return this.#engine.pasteText(value, snapshot, command);
+  }
+}

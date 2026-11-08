@@ -102,6 +102,16 @@ impl Workspace {
         self.module(module_id)?.source_path.as_deref()
     }
 
+    /// The module whose source file is `path`, if any. Module paths are under
+    /// the canonical workspace root, so only `path` needs canonicalizing.
+    pub(crate) fn module_for_source(&self, path: &Path) -> Option<&str> {
+        let path = path.canonicalize().ok()?;
+        self.modules
+            .iter()
+            .find(|module| module.source_path.as_deref() == Some(path.as_path()))
+            .map(|module| module.id.as_str())
+    }
+
     pub(crate) fn explanation_path(&self, module_id: &str, filename: &str) -> Option<PathBuf> {
         self.markdown_path(module_id, filename, |module| &module.explanation_dir)
     }

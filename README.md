@@ -124,6 +124,27 @@ File-backed modules also have a **View source** page that shows the module's
 Rust file with syntax highlighting and edits it in place. Saving uses the same
 `Cmd+S`/`Ctrl+S` shortcut and conflict detection as Markdown documents.
 
+The source page's **Helix** toggle turns on Helix-style modal editing. The
+setting is remembered in that browser. It supports normal, insert, and select
+modes, counts, registers, macros, `.` repeat, search, multiple selections, match
+mode (`m`), and a `:` command line (`:w`, `:q`, `:wq`, `:reload`, `:sort`, and
+more).
+
+Helix's language-server goto keys use rust-analyzer when it is on `PATH`, which
+documenter starts on first use the way Helix does:
+- `gd` goes to the definition, `gD` to the declaration, `gy` to the type
+  definition, and `gi` to the implementation.
+- `gr` lists references.
+
+A single result jumps directly, opening another module's source page if needed.
+Several results open a picker: type to filter, use the arrow keys or
+`C-n`/`C-p` to move, and press `Enter` to open a result. `C-o` returns from
+jumps within a file, and the browser's back button returns across files.
+
+Features that need a terminal or other editor services are left out: file
+pickers, splits, the other language-server commands, tree-sitter text objects,
+and shell pipes. Pressing one of those keys explains why it is unavailable.
+
 The current analyzer intentionally follows `module-viz`: it supports Rust
 packages and explicit Cargo workspace members, but does not expand globbed
 workspace members yet.
