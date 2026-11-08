@@ -45,7 +45,7 @@ input:focus, textarea:focus { border-color: #76aee6; box-shadow: 0 0 0 3px rgb(1
 }
 .brand { color: #f0f4f8; font-family: "IBM Plex Mono", monospace; font-weight: 700; letter-spacing: -0.04em; }
 .back-link { color: #90a5ba; font-size: 0.88rem; }
-.graph-page, .editor-page, .drawing-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+.graph-page, .editor-page, .drawing-page, .code-page { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
 .graph-toolbar { position: relative; z-index: 2; }
 .graph-search { margin-left: auto; }
 .graph-search input { width: min(32vw, 360px); padding: 0.52rem 0.75rem; }
@@ -87,6 +87,9 @@ input:focus, textarea:focus { border-color: #76aee6; box-shadow: 0 0 0 3px rgb(1
 .markdown-editor { flex: 1; min-height: 0; width: 100%; padding: 2rem max(2rem, calc((100vw - 920px) / 2)); resize: none; border: 0; border-radius: 0; box-shadow: none; font-family: "IBM Plex Mono", monospace; font-size: 0.94rem; line-height: 1.68; }
 .preview-shell { flex: 1; min-height: 0; overflow: auto; width: 100%; padding: 2.75rem max(2rem, calc((100vw - 920px) / 2)) 7rem; }
 .conflict-banner { display: flex; justify-content: center; align-items: center; gap: 1rem; padding: 0.55rem 1rem; color: #ffd6a2; background: #352819; border-bottom: 1px solid #634b2c; font-size: 0.86rem; }
+
+.source-link { display: inline-block; margin: -2rem 0 1rem; font-size: 0.88rem; }
+.code-editor { flex: 1; min-height: 0; overflow: auto; }
 
 .drawing-toolbar .drawing-name { margin-right: auto; font-family: "IBM Plex Mono", monospace; font-size: 0.82rem; color: #8499ad; }
 .drawing-editor { flex: 1; min-height: 0; background: #fff; }

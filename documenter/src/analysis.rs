@@ -26,10 +26,11 @@ struct Module {
     crate_name: String,
     name: String,
     docs: String,
-    file_backed: bool,
     folded: bool,
     explanations: Vec<MarkdownFile>,
     explorations: Vec<MarkdownFile>,
+    #[serde(rename = "file_backed", serialize_with = "serialize_is_some")]
+    source_path: Option<PathBuf>,
     #[serde(skip)]
     explanation_dir: Option<PathBuf>,
     #[serde(skip)]
@@ -97,6 +98,10 @@ impl Workspace {
         self.modules.iter().find(|module| module.id == id)
     }
 
+    pub(crate) fn source_path(&self, module_id: &str) -> Option<&Path> {
+        self.module(module_id)?.source_path.as_deref()
+    }
+
     pub(crate) fn explanation_path(&self, module_id: &str, filename: &str) -> Option<PathBuf> {
         self.markdown_path(module_id, filename, |module| &module.explanation_dir)
     }
@@ -131,6 +136,13 @@ impl Workspace {
             .as_ref()
             .map(|directory| directory.join(filename))
     }
+}
+
+fn serialize_is_some<S: serde::Serializer>(
+    value: &Option<PathBuf>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_bool(value.is_some())
 }
 
 fn valid_markdown_filename(filename: &str) -> bool {
@@ -208,11 +220,17 @@ mod tests {
         let inline = workspace.module("sample_app::inline").unwrap();
 
         assert_eq!(root.docs, "Crate docs.");
-        assert!(engine.file_backed);
         assert_eq!(engine.docs, "Engine docs.");
         assert_eq!(engine.explanations[0].title, "Frame Loop");
         assert_eq!(engine.explorations[0].title, "Async Loop Ideas");
-        assert!(!inline.file_backed);
+        assert!(
+            engine
+                .source_path
+                .as_ref()
+                .unwrap()
+                .ends_with("src/engine.rs")
+        );
+        assert!(inline.source_path.is_none());
         assert!(inline.explanation_dir.is_none());
         assert!(inline.exploration_dir.is_none());
     }

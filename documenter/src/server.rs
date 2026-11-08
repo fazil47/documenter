@@ -271,6 +271,7 @@ fn router(state: Arc<AppState>) -> Router {
             get(get_exploration).put(put_exploration),
         )
         .route("/api/explorations", post(create_exploration))
+        .route("/api/source", get(get_source).put(put_source))
         .route("/api/drawing", get(get_drawing).put(put_drawing))
         .route("/api/drawings", post(create_drawing))
         .route("/api/drawing-file", get(get_drawing_file))
@@ -289,6 +290,12 @@ struct ResourceQuery {
     token: String,
     module: String,
     file: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModuleQuery {
+    token: String,
+    module: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -378,7 +385,7 @@ async fn get_markdown(
 }
 
 #[derive(Debug, Deserialize)]
-struct SaveMarkdown {
+struct SaveContent {
     content: String,
     revision: String,
 }
@@ -386,7 +393,7 @@ struct SaveMarkdown {
 async fn put_explanation(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ResourceQuery>,
-    Json(body): Json<SaveMarkdown>,
+    Json(body): Json<SaveContent>,
 ) -> ApiResult<Json<MarkdownResponse>> {
     put_markdown(state, query, body, MarkdownKind::Explanation).await
 }
@@ -394,7 +401,7 @@ async fn put_explanation(
 async fn put_exploration(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ResourceQuery>,
-    Json(body): Json<SaveMarkdown>,
+    Json(body): Json<SaveContent>,
 ) -> ApiResult<Json<MarkdownResponse>> {
     put_markdown(state, query, body, MarkdownKind::Exploration).await
 }
@@ -402,26 +409,12 @@ async fn put_exploration(
 async fn put_markdown(
     state: Arc<AppState>,
     query: ResourceQuery,
-    body: SaveMarkdown,
+    body: SaveContent,
     kind: MarkdownKind,
 ) -> ApiResult<Json<MarkdownResponse>> {
     state.authorize(&query.token)?;
     let path = markdown_path(&state, kind, &query.module, &query.file).await?;
-    ensure_safe_existing_file(&state.root, &path)?;
-    let current = std::fs::read_to_string(&path)
-        .map_err(|error| ApiError::io(&format!("reading {}", kind.name()), error))?;
-    if content_revision(&current) != body.revision {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            format!("the {} changed on disk; reload before saving", kind.name()),
-        ));
-    }
-    atomic_write(&path, &body.content)
-        .map_err(|error| ApiError::internal(&format!("saving {}", kind.name()), error))?;
-    state
-        .refresh_workspace()
-        .await
-        .map_err(|error| ApiError::internal("refreshing workspace", error))?;
+    save_if_unchanged(&state, &path, &body, kind.name()).await?;
     Ok(Json(MarkdownResponse {
         module: query.module,
         filename: query.file,
@@ -491,6 +484,78 @@ async fn create_markdown(
             content,
         }),
     ))
+}
+
+/// Replaces `path` only if its content still matches the revision the client edited.
+async fn save_if_unchanged(
+    state: &AppState,
+    path: &Path,
+    body: &SaveContent,
+    name: &str,
+) -> ApiResult<()> {
+    ensure_safe_existing_file(&state.root, path)?;
+    let current = std::fs::read_to_string(path)
+        .map_err(|error| ApiError::io(&format!("reading {name}"), error))?;
+    if content_revision(&current) != body.revision {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            format!("the {name} changed on disk; reload before saving"),
+        ));
+    }
+    atomic_write(path, &body.content)
+        .map_err(|error| ApiError::internal(&format!("saving {name}"), error))?;
+    state
+        .refresh_workspace()
+        .await
+        .map_err(|error| ApiError::internal("refreshing workspace", error))
+}
+
+#[derive(Serialize)]
+struct SourceResponse {
+    path: String,
+    content: String,
+    revision: String,
+}
+
+async fn get_source(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ModuleQuery>,
+) -> ApiResult<Json<SourceResponse>> {
+    state.authorize(&query.token)?;
+    let path = source_path(&state, &query.module).await?;
+    ensure_safe_existing_file(&state.root, &path)?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|error| ApiError::io("reading source file", error))?;
+    Ok(Json(SourceResponse {
+        path: display_path(&state.root, &path),
+        revision: content_revision(&content),
+        content,
+    }))
+}
+
+async fn put_source(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ModuleQuery>,
+    Json(body): Json<SaveContent>,
+) -> ApiResult<Json<SourceResponse>> {
+    state.authorize(&query.token)?;
+    let path = source_path(&state, &query.module).await?;
+    let unsaved_in_editor = match source_document_path(&state.root, &path) {
+        Some(document) => state.documents.read().await.contains_key(&document),
+        None => false,
+    };
+    if unsaved_in_editor {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "the source file has unsaved changes in the editor; save or revert them there first",
+        ));
+    }
+    save_if_unchanged(&state, &path, &body, "source file").await?;
+    Ok(Json(SourceResponse {
+        path: display_path(&state.root, &path),
+        revision: content_revision(&body.content),
+        content: body.content,
+    }))
 }
 
 #[derive(Serialize)]
@@ -670,6 +735,22 @@ async fn markdown_path(
         MarkdownKind::Exploration => model.workspace.exploration_path(module, filename),
     };
     path.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, format!("{} not found", kind.name())))
+}
+
+async fn source_path(state: &AppState, module: &str) -> ApiResult<PathBuf> {
+    let model = state.model.read().await;
+    model
+        .workspace
+        .source_path(module)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "source file not found"))
+}
+
+fn display_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 async fn drawing_path(
@@ -929,21 +1010,7 @@ mod tests {
     #[tokio::test]
     async fn api_writes_markdown_documents_and_mirrored_drawings_with_conflict_checks() {
         let project = sample_project();
-        let workspace = Workspace::load_with_documents(project.path(), &HashMap::new()).unwrap();
-        let (revisions, _) = broadcast::channel(8);
-        let state = Arc::new(AppState {
-            root: project.path().to_path_buf(),
-            token: "test-token".to_owned(),
-            model: RwLock::new(ModelState {
-                revision: 1,
-                workspace,
-            }),
-            refresh: Mutex::new(()),
-            revisions,
-            documents: RwLock::new(HashMap::new()),
-            scheduled_refresh: StdMutex::new(None),
-        });
-        let app = router(state);
+        let app = test_router(project.path());
 
         let unauthorized = app
             .clone()
@@ -1082,6 +1149,95 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_reads_and_writes_module_source_with_conflict_checks() {
+        let project = sample_project();
+        let app = test_router(project.path());
+        let source = project.path().join("src/engine.rs");
+
+        let loaded = json_request(
+            &app,
+            "GET",
+            "/api/source?token=test-token&module=sample::engine",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(loaded.0, StatusCode::OK);
+        assert_eq!(loaded.1["path"], "src/engine.rs");
+        assert_eq!(loaded.1["content"], "pub struct Engine;\n");
+
+        let unauthorized = json_request(
+            &app,
+            "GET",
+            "/api/source?token=wrong&module=sample::engine",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(unauthorized.0, StatusCode::UNAUTHORIZED);
+
+        let conflict = json_request(
+            &app,
+            "PUT",
+            "/api/source?token=test-token&module=sample::engine",
+            serde_json::json!({ "content": "// changed\n", "revision": "stale" }),
+        )
+        .await;
+        assert_eq!(conflict.0, StatusCode::CONFLICT);
+        assert_eq!(fs::read_to_string(&source).unwrap(), "pub struct Engine;\n");
+
+        let saved = json_request(
+            &app,
+            "PUT",
+            "/api/source?token=test-token&module=sample::engine",
+            serde_json::json!({
+                "content": "//! Engine docs.\npub struct Engine;\n",
+                "revision": loaded.1["revision"]
+            }),
+        )
+        .await;
+        assert_eq!(saved.0, StatusCode::OK);
+        assert!(saved.1.get("module").is_none());
+        assert_eq!(
+            saved.1["revision"],
+            content_revision("//! Engine docs.\npub struct Engine;\n")
+        );
+        assert_eq!(
+            fs::read_to_string(&source).unwrap(),
+            "//! Engine docs.\npub struct Engine;\n"
+        );
+
+        let missing = json_request(
+            &app,
+            "GET",
+            "/api/source?token=test-token&module=sample::missing",
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(missing.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn source_saves_refuse_files_with_unsaved_editor_buffers() {
+        let project = sample_project();
+        let source = project.path().join("src/engine.rs");
+        let app = test_router_with_documents(
+            project.path(),
+            HashMap::from([(source.clone(), "pub struct Unsaved;\n".to_owned())]),
+        );
+        let saved = json_request(
+            &app,
+            "PUT",
+            "/api/source?token=test-token&module=sample::engine",
+            serde_json::json!({
+                "content": "// changed\n",
+                "revision": content_revision("pub struct Engine;\n")
+            }),
+        )
+        .await;
+        assert_eq!(saved.0, StatusCode::CONFLICT);
+        assert_eq!(fs::read_to_string(&source).unwrap(), "pub struct Engine;\n");
+    }
+
+    #[tokio::test]
     async fn unsaved_rust_documents_refresh_the_workspace_after_a_debounce() {
         let project = sample_project();
         let server = DocumentationServer::new(project.path().to_path_buf(), HashMap::new())
@@ -1117,6 +1273,27 @@ mod tests {
             .unwrap();
         let (left, right) = tokio::join!(server.open_url(), server.open_url());
         assert_eq!(left.unwrap(), right.unwrap());
+    }
+
+    fn test_router(root: &Path) -> Router {
+        test_router_with_documents(root, HashMap::new())
+    }
+
+    fn test_router_with_documents(root: &Path, documents: HashMap<PathBuf, String>) -> Router {
+        let workspace = Workspace::load_with_documents(root, &documents).unwrap();
+        let (revisions, _) = broadcast::channel(8);
+        router(Arc::new(AppState {
+            root: workspace.root().to_path_buf(),
+            token: "test-token".to_owned(),
+            model: RwLock::new(ModelState {
+                revision: 1,
+                workspace,
+            }),
+            refresh: Mutex::new(()),
+            revisions,
+            documents: RwLock::new(normalize_documents(root, documents)),
+            scheduled_refresh: StdMutex::new(None),
+        }))
     }
 
     fn sample_project() -> TempDir {

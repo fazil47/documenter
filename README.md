@@ -40,6 +40,20 @@ The editor supplies the workspace root through LSP. `documenter lsp --root
 on a random `127.0.0.1` port and opens the authenticated URL in the default
 browser.
 
+### Without an editor
+
+Serve the documentation workspace directly from a terminal:
+
+```sh
+documenter serve
+```
+
+The server analyzes the Cargo workspace at or above the current directory, or
+at `--root /path/to/workspace`, and fails if none is found. It prints the
+authenticated URL as `documenter: serving <url>`, opens it in the default
+browser unless `--no-open` is given, and runs until `Ctrl-C`. File changes are
+picked up by the server's own watcher.
+
 ### Zed
 
 Install the native language server, then install the adapter in
@@ -105,6 +119,10 @@ Markdown edits use **Source** and **Preview** modes. `Cmd+Enter` on macOS or
 `Cmd+S`/`Ctrl+S` save Markdown or drawing changes. External changes refresh live;
 dirty editors keep their local text and report a conflict instead of overwriting
 disk content.
+
+File-backed modules also have a **View source** page that shows the module's
+Rust file with syntax highlighting and edits it in place. Saving uses the same
+`Cmd+S`/`Ctrl+S` shortcut and conflict detection as Markdown documents.
 
 The current analyzer intentionally follows `module-viz`: it supports Rust
 packages and explicit Cargo workspace members, but does not expand globbed

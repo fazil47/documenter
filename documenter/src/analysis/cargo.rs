@@ -39,7 +39,10 @@ pub(super) fn find_root(start: &Path) -> Result<PathBuf> {
             return Ok(directory.to_path_buf());
         }
     }
-    bail!("no Cargo.toml at or above {}", start.display())
+    bail!(
+        "no Cargo workspace found: no Cargo.toml at or above {}",
+        start.display()
+    )
 }
 
 pub(super) fn discover_packages(codebase: &Path) -> Result<Vec<Package>> {

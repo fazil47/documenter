@@ -6,6 +6,7 @@ import MarkdownPage from "./MarkdownPage.jsx";
 import ModulePage, { NotFound } from "./ModulePage.jsx";
 import { markdownResourceForPath } from "./resources.js";
 
+const CodePage = lazy(() => import("./CodePage.jsx"));
 const DrawingPage = lazy(() => import("./DrawingPage.jsx"));
 
 function route() {
@@ -16,6 +17,9 @@ function route() {
   if (segments.length === 0) return { name: "graph" };
   if (segments[0] === "modules" && segments.length === 2) {
     return { name: "module", module: segments[1] };
+  }
+  if (segments[0] === "code" && segments.length === 2) {
+    return { name: "code", module: segments[1] };
   }
   const markdown = markdownResourceForPath(segments[0]);
   if (markdown && segments.length === 3) {
@@ -72,6 +76,13 @@ export default function App() {
         filename={current.file}
         workspaceRevision={revision}
       />
+    );
+  }
+  if (current.name === "code") {
+    return (
+      <Suspense fallback={<main className="centered-state"><p>Loading code editor…</p></main>}>
+        <CodePage moduleId={current.module} workspaceRevision={revision} />
+      </Suspense>
     );
   }
   if (current.name === "drawing") {

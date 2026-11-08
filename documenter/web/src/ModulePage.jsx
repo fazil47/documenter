@@ -126,6 +126,7 @@ export default function ModulePage({ workspace, moduleId }) {
       <div className="content-shell">
         <div className="eyebrow">{module.file_backed ? "File-backed module" : "Inline module"}</div>
         <h1 className="module-heading">{module.id}</h1>
+        {module.file_backed && <a className="source-link" href={routes.code(module.id)}>View source</a>}
         <section className="content-section">
           <h2>Module documentation</h2>
           {module.docs ? (

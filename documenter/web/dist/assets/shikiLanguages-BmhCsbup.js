@@ -1,0 +1,1 @@
+import{t as e}from"./index-BbXVMnPQ.js";var t={rust:()=>e(()=>import(`./rust-DpiIf5JO.js`),[])};export{t as bundledLanguages};

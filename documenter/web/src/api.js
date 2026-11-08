@@ -44,6 +44,7 @@ function href(path, values = {}) {
 export const routes = {
   graph: () => href("/"),
   module: (module) => href(`/modules/${encodeURIComponent(module)}`),
+  code: (module) => href(`/code/${encodeURIComponent(module)}`),
   markdown: (kind, module, file) => {
     const resource = markdownResource(kind);
     return href(`/${resource.path}/${encodeURIComponent(module)}/${encodeURIComponent(file)}`);
