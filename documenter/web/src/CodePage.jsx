@@ -60,8 +60,66 @@ function storeHelix(enabled) {
   }
 }
 
-function HelixStatus({ status }) {
+const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+
+function Spinner() {
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setFrame((current) => (current + 1) % SPINNER.length), 80);
+    return () => clearInterval(timer);
+  }, []);
+  return SPINNER[frame];
+}
+
+// rust-analyzer's state, as Helix shows its language server's progress.
+function LanguageServerStatus({ server }) {
+  if (!server) return null;
+  if (server.state === "indexing") {
+    return (
+      <span className="helix-language-server busy">
+        <Spinner /> rust-analyzer{server.progress ? `: ${server.progress}` : ""}
+      </span>
+    );
+  }
+  if (server.state === "missing") return <span className="helix-language-server error">rust-analyzer not installed</span>;
+  if (server.state === "failed") return <span className="helix-language-server error" title={server.message}>rust-analyzer failed</span>;
+  return <span className="helix-language-server">rust-analyzer</span>;
+}
+
+// Polls the server, which starts rust-analyzer the first time, as Helix does on
+// opening a file. Mounted with the Helix status line, so it polls only in Helix mode.
+// Polling stops on a missing or failed server and resumes after the next lookup,
+// which restarts rust-analyzer.
+function useLanguageServer(lookups) {
+  const [server, setServer] = useState(undefined);
+  useEffect(() => {
+    let stopped = false;
+    let timer;
+    const poll = async () => {
+      let delay = 1000;
+      try {
+        const status = await api("/api/language-server");
+        if (stopped) return;
+        setServer(status);
+        if (status.state === "missing" || status.state === "failed") return;
+      } catch {
+        if (stopped) return;
+        delay = 5000;
+      }
+      timer = setTimeout(poll, delay);
+    };
+    poll();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [lookups]);
+  return server;
+}
+
+function HelixStatus({ status, lookups }) {
   const { mode, pending, prompt, message, recording } = status;
+  const server = useLanguageServer(lookups);
   return (
     <footer className={`helix-status helix-${mode}`}>
       <span className="helix-mode">{MODE_LABELS[mode]}</span>
@@ -71,6 +129,7 @@ function HelixStatus({ status }) {
         <span className={`helix-message ${message?.error ? "error" : ""}`}>{message?.text}</span>
       )}
       {recording && <span className="helix-recording">[recording {recording}]</span>}
+      <LanguageServerStatus server={server} />
       <span className="helix-pending">{pending}</span>
     </footer>
   );
@@ -222,6 +281,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
 
   const editorOptions = useMemo(() => ({ onAttach: (attached) => setEditor(attached) }), []);
   const [picker, setPicker] = useState(null);
+  const [lookups, setLookups] = useState(0);
   const helixActions = useRef(undefined);
   const arrival = useRef(arrivalTarget());
   // Navigation answers arrive later, so they read the editor and dirty state when they land.
@@ -255,6 +315,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     const label = NAVIGATION_LABELS[kind];
     const notify = (text, failed) => helixActions.current?.notify(text, failed);
     notify(`looking up ${label}…`);
+    setLookups((count) => count + 1);
     try {
       const { locations } = await api("/api/navigate", {
         method: "POST",
@@ -368,7 +429,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
           </div>
         )}
       </div>
-      {helixEnabled && <HelixStatus status={helixStatus} />}
+      {helixEnabled && <HelixStatus status={helixStatus} lookups={lookups} />}
       {picker && (
         <LocationPicker
           title={picker.title}

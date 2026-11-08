@@ -109,6 +109,9 @@ button.toggle.active { color: #111820; background: #d8e6f4; border-color: #d8e6f
 .helix-message.error { color: #ff968f; }
 .helix-prompt-cursor { display: inline-block; width: 0.55em; height: 1em; vertical-align: text-bottom; background: #a9b8c7; }
 .helix-recording { color: #f5b96b; }
+.helix-language-server { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; color: #6f8193; }
+.helix-language-server.busy { color: #a9b8c7; }
+.helix-language-server.error { color: #ff968f; }
 .picker { width: min(760px, 100%); padding: 0; overflow: hidden; }
 .picker-header { display: flex; align-items: center; gap: 0.8rem; padding: 0.8rem 1rem; border-bottom: 1px solid #344457; }
 .picker-header h2 { margin: 0; font-size: 0.95rem; }

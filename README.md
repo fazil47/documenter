@@ -130,8 +130,9 @@ modes, counts, registers, macros, `.` repeat, search, multiple selections, match
 mode (`m`), `gw` jump labels, and a `:` command line (`:w`, `:q`, `:wq`,
 `:reload`, `:sort`, and more).
 
-Helix's language-server goto keys use rust-analyzer when it is on `PATH`, which
-documenter starts on first use the way Helix does:
+Helix's language-server goto keys use rust-analyzer when it is on `PATH`. Like
+Helix, documenter starts it when a source page opens in Helix mode, and the
+status line shows its progress while it indexes:
 - `gd` goes to the definition, `gD` to the declaration, `gy` to the type
   definition, and `gi` to the implementation.
 - `gr` lists references.

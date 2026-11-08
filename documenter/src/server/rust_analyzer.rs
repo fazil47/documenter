@@ -1,14 +1,14 @@
 //! On-demand rust-analyzer client for source navigation, started like an
 //! editor's language server: lazily, over stdio, for the workspace root.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -54,6 +54,16 @@ pub(super) enum NavigationError {
     NotInstalled,
     Indexing,
     Failed(String),
+}
+
+/// What the status line shows about rust-analyzer.
+#[derive(Debug, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(super) enum ServerStatus {
+    Missing,
+    Failed { message: String },
+    Indexing { progress: Option<String> },
+    Ready,
 }
 
 pub(super) struct RustAnalyzer {
@@ -115,6 +125,29 @@ impl RustAnalyzer {
         Ok(locations)
     }
 
+    /// Starts rust-analyzer if it is not running, as an editor does when a file
+    /// opens, and reports whether it is still loading.
+    /// A server that exited is not restarted here; like Helix, it waits for the
+    /// next goto command, so a crashing server is not respawned on every poll.
+    pub(super) async fn status(&self) -> ServerStatus {
+        let running = self.client.lock().await.clone();
+        let client = match running {
+            Some(client) if !client.alive.load(Ordering::SeqCst) => {
+                return ServerStatus::Failed {
+                    message: "rust-analyzer exited; a goto command restarts it".to_owned(),
+                };
+            }
+            Some(client) => client,
+            None => match self.client().await {
+                Ok(client) => client,
+                Err(NavigationError::NotInstalled) => return ServerStatus::Missing,
+                Err(NavigationError::Failed(message)) => return ServerStatus::Failed { message },
+                Err(NavigationError::Indexing) => return ServerStatus::Indexing { progress: None },
+            },
+        };
+        client.status()
+    }
+
     async fn client(&self) -> Result<Arc<Client>, NavigationError> {
         let mut slot = self.client.lock().await;
         if let Some(client) = slot
@@ -134,8 +167,29 @@ type Pending = HashMap<i64, oneshot::Sender<Result<Value, (i64, String)>>>;
 // What rust-analyzer reports about its loading state.
 #[derive(Clone)]
 struct Status {
-    progress: Arc<StdMutex<HashSet<String>>>,
+    progress: Arc<StdMutex<Vec<Task>>>,
     quiescent: Arc<AtomicBool>,
+}
+
+// One `$/progress` token's latest report; the most recently updated is last.
+struct Task {
+    token: String,
+    title: String,
+    message: Option<String>,
+    percentage: Option<u64>,
+}
+
+impl Task {
+    // "Indexing 12/40 (30%)", like Helix's progress messages.
+    fn text(&self) -> String {
+        let percentage = self.percentage.map(|percentage| format!("({percentage}%)"));
+        [Some(self.title.clone()), self.message.clone(), percentage]
+            .into_iter()
+            .flatten()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
 }
 
 struct Client {
@@ -187,7 +241,7 @@ impl Client {
 
         let pending = Arc::new(StdMutex::new(Pending::new()));
         let status = Status {
-            progress: Arc::new(StdMutex::new(HashSet::new())),
+            progress: Arc::new(StdMutex::new(Vec::new())),
             quiescent: Arc::new(AtomicBool::new(false)),
         };
         let alive = Arc::new(AtomicBool::new(true));
@@ -270,6 +324,21 @@ impl Client {
                 .lock()
                 .expect("progress mutex poisoned")
                 .is_empty()
+    }
+
+    fn status(&self) -> ServerStatus {
+        let tasks = self
+            .status
+            .progress
+            .lock()
+            .expect("progress mutex poisoned");
+        if self.status.quiescent.load(Ordering::SeqCst) && tasks.is_empty() {
+            ServerStatus::Ready
+        } else {
+            ServerStatus::Indexing {
+                progress: tasks.last().map(Task::text),
+            }
+        }
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, NavigationError> {
@@ -368,15 +437,25 @@ async fn read_messages(
             }
             (Some("$/progress"), None) => {
                 let token = message["params"]["token"].to_string();
-                let mut active = status.progress.lock().expect("progress mutex poisoned");
-                match message["params"]["value"]["kind"].as_str() {
-                    Some("begin") => {
-                        active.insert(token);
-                    }
-                    Some("end") => {
-                        active.remove(&token);
-                    }
-                    _ => {}
+                let value = &message["params"]["value"];
+                let mut tasks = status.progress.lock().expect("progress mutex poisoned");
+                let index = tasks.iter().position(|task| task.token == token);
+                let previous = index.map(|index| tasks.remove(index));
+                let kind = value["kind"].as_str();
+                if matches!(kind, Some("begin" | "report")) {
+                    let text = |name: &str| value[name].as_str().map(str::to_owned);
+                    // Reports omit what has not changed since the last one.
+                    tasks.push(Task {
+                        title: text("title")
+                            .or_else(|| previous.as_ref().map(|task| task.title.clone()))
+                            .unwrap_or_default(),
+                        message: text("message")
+                            .or_else(|| previous.as_ref().and_then(|task| task.message.clone())),
+                        percentage: value["percentage"]
+                            .as_u64()
+                            .or_else(|| previous.as_ref().and_then(|task| task.percentage)),
+                        token,
+                    });
                 }
             }
             (None, Some(id)) => {

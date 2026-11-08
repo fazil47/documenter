@@ -28,7 +28,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
-use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer};
+use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer, ServerStatus};
 use self::storage::atomic_write;
 use crate::analysis::{DrawingCollection, Workspace, markdown_title};
 use crate::drawing::{
@@ -277,6 +277,7 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/explorations", post(create_exploration))
         .route("/api/source", get(get_source).put(put_source))
         .route("/api/navigate", post(navigate))
+        .route("/api/language-server", get(language_server))
         .route("/api/drawing", get(get_drawing).put(put_drawing))
         .route("/api/drawings", post(create_drawing))
         .route("/api/drawing-file", get(get_drawing_file))
@@ -586,6 +587,14 @@ struct LocationResponse {
     end_line: u32,
     end_character: u32,
     preview: String,
+}
+
+async fn language_server(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+) -> ApiResult<Json<ServerStatus>> {
+    state.authorize(&query.token)?;
+    Ok(Json(state.rust_analyzer.status().await))
 }
 
 async fn navigate(
@@ -1376,6 +1385,23 @@ mod tests {
         assert_eq!(location["module"], "sample::engine");
         assert_eq!(location["line"], 0);
         assert_eq!(location["preview"], "pub struct Engine;");
+
+        let status = loop {
+            let status = json_request(
+                &app,
+                "GET",
+                "/api/language-server?token=test-token",
+                serde_json::Value::Null,
+            )
+            .await;
+            if status.1["state"] == "indexing" && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                continue;
+            }
+            break status;
+        };
+        assert_eq!(status.0, StatusCode::OK);
+        assert_eq!(status.1["state"], "ready", "{}", status.1);
     }
 
     #[tokio::test]
