@@ -175,6 +175,9 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
         const head = primary.direction === -1 ? primary.start : primary.end;
         const line = primary.direction === 1 && head.character === 0 ? head.line - 1 : head.line;
         scrollToLine(container, Math.max(0, line), "nearest");
+        // Accents and other compositions are drawn at the page's own caret, which
+        // setViewState leaves behind; Pierre's focus moves it to the primary selection.
+        target.focus({ preventScroll: true });
       }
       show(result);
     };
@@ -221,36 +224,34 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
       return result;
     }
 
-    // macOS dead keys (Option+e, Option+i, Option+n, ...) start an accent
-    // composition before their keydown arrives, and the page cannot prevent it.
-    // Outside insert mode, the keydown cancels the composition, the lines it was
-    // drawn into are restored, and then the key runs.
+    // Compositions (macOS accents after a dead key such as Option+e, and IMEs)
+    // are drawn into the page by the browser, which can break Pierre's lines,
+    // for example by deleting an empty line along with its accent. So the lines
+    // are snapshotted when one starts and restored when it ends; in insert mode
+    // the composed text then goes to Pierre like typed text, and in other modes
+    // the composition is cancelled. WebKit starts it before the dead key's
+    // keydown, Chrome after; both have finished changing the page by compositionend.
     let composition;
-    let restoring;
-    let ending = false;
-    const queued = [];
+
+    const content = () => container.firstElementChild?.shadowRoot?.querySelector("[data-content]");
+
+    // Blurring cancels the composition and fires its compositionend right away.
+    // Pierre's own focus keeps its selection instead of adopting the page's.
+    const cancelComposition = () => {
+      latest.current.editor.blur();
+      latest.current.editor.focus({ preventScroll: true });
+    };
 
     const keydown = (event) => {
       if (!latest.current.editor) return;
-      // Blurring cancels the composition; WebKit fires its compositionend right
-      // away, which starts the restore, so this key is queued behind it.
-      // Pierre's own focus keeps its selection instead of adopting the page's.
-      if (composition) {
-        latest.current.editor.blur();
-        latest.current.editor.focus();
-      }
+      if (composition && !composition.insert) cancelComposition();
+      // Safari's keydown for the Enter that commits an IME composition; the composition already typed.
+      if (state.mode === "insert" && event.keyCode === 229) return;
       const key = keyFromEvent(event, { composing: state.mode !== "insert" });
       if (!key) {
         // Keys Helix cannot name (AltGr, unmapped dead keys) must not type outside insert mode.
         const printable = event.key?.length === 1 || event.key === "Dead";
         if (state.mode !== "insert" && printable && !event.metaKey) event.preventDefault();
-        return;
-      }
-      if (restoring) {
-        // Runs once the composed lines are restored, so the restore cannot hide its edits.
-        queued.push(key);
-        event.preventDefault();
-        event.stopPropagation();
         return;
       }
       if (dispatch(key, false).handled) {
@@ -261,26 +262,41 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
 
     const inCode = (event) => event.composedPath().some((node) => node.hasAttribute?.("data-content"));
     const compositionstart = (event) => {
-      if (state.mode === "insert" || !latest.current.editor || !inCode(event)) return;
+      if (!latest.current.editor || !inCode(event)) return;
+      // The composition replaces the page's selection, which may span lines.
+      const selections = latest.current.editor.getViewState().selections ?? [];
+      const first = Math.min(...selections.map((selection) => selection.start.line));
+      const last = Math.max(...selections.map((selection) => selection.end.line));
       const lines = lineElements(container);
-      const indexes = new Set((latest.current.editor.getViewState().selections ?? []).flatMap((selection) => [selection.start.line, selection.end.line]));
-      composition = [...indexes].flatMap((index) => (lines[index] ? [[lines[index], [...lines[index].childNodes].map((node) => node.cloneNode(true))]] : []));
+      composition = {
+        insert: state.mode === "insert",
+        lines: [...lines].slice(first, last + 1).map((line) => [line, line.cloneNode(true)]),
+        parent: lines[first]?.parentNode,
+        next: lines[last + 1] ?? null,
+      };
+      // In Chrome the dead key's keydown has already passed, so cancel without waiting for the next key.
+      const pending = composition;
+      if (!pending.insert) setTimeout(() => composition === pending && latest.current.editor && cancelComposition());
     };
     const compositionend = (event) => {
-      if (!composition || ending) return;
-      restoring = composition;
+      // The re-dispatched compositionend below arrives after `composition` is cleared.
+      if (!composition) return;
+      const { insert, lines, parent, next } = composition;
       composition = undefined;
       event.stopPropagation();
+      const target = content();
       // Pierre still has to hear that the composition ended, with nothing to insert.
-      ending = true;
-      event.composedPath()[0].dispatchEvent(new CompositionEvent("compositionend", { data: "", bubbles: true, composed: true }));
-      ending = false;
-      requestAnimationFrame(() => {
-        for (const [line, children] of restoring) line.replaceChildren(...children);
-        restoring = undefined;
-        for (const key of queued.splice(0)) dispatch(key, false);
-        syncCaret();
-      });
+      target?.dispatchEvent(new CompositionEvent("compositionend", { data: "", bubbles: true, composed: true }));
+      // Put back every line as it was, including any the composition removed.
+      for (const [line, copy] of lines) {
+        line.replaceChildren(...copy.childNodes);
+        parent?.insertBefore(line, next);
+      }
+      // Pierre inserts typed text from beforeinput, so hand it the composed text the same way.
+      if (insert && event.data) {
+        target?.dispatchEvent(new InputEvent("beforeinput", { inputType: "insertText", data: event.data, bubbles: true, composed: true, cancelable: true }));
+      }
+      syncCaret();
     };
 
     container.addEventListener("keydown", keydown, true);
