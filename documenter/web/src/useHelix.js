@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import runtimeWasm from "web-tree-sitter/web-tree-sitter.wasm?url";
 import rustWasm from "tree-sitter-rust/tree-sitter-rust.wasm?url";
 
-import { HelixState, composingKeyFromEvent, keyFromEvent, loadRustSyntax } from "./helix/index.js";
+import { HelixState, keyFromEvent, loadRustSyntax } from "./helix/index.js";
 
 const INITIAL_STATUS = { mode: "normal", pending: "", prompt: undefined, message: undefined, recording: undefined };
 
@@ -222,8 +222,9 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     }
 
     // macOS dead keys (Option+e, Option+i, Option+n, ...) start an accent
-    // composition that the page cannot prevent. Outside insert mode, keep Pierre
-    // from inserting the accent and restore the lines it was drawn into.
+    // composition before their keydown arrives, and the page cannot prevent it.
+    // Outside insert mode, the keydown cancels the composition, the lines it was
+    // drawn into are restored, and then the key runs.
     let composition;
     let restoring;
     let ending = false;
@@ -231,16 +232,21 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
 
     const keydown = (event) => {
       if (!latest.current.editor) return;
-      // While an accent composes, keys report the composition rather than themselves.
-      const accent = composition || restoring || (state.mode !== "insert" && (event.isComposing || event.keyCode === 229));
-      const key = accent ? composingKeyFromEvent(event) : keyFromEvent(event);
+      // Blurring cancels the composition; WebKit fires its compositionend right
+      // away, which starts the restore, so this key is queued behind it.
+      // Pierre's own focus keeps its selection instead of adopting the page's.
+      if (composition) {
+        latest.current.editor.blur();
+        latest.current.editor.focus();
+      }
+      const key = keyFromEvent(event, { composing: state.mode !== "insert" });
       if (!key) {
-        // Keys Helix cannot name (AltGr, dead keys, composition) must not type outside insert mode.
-        const printable = event.key?.length === 1 || event.key === "Dead" || Boolean(accent);
+        // Keys Helix cannot name (AltGr, unmapped dead keys) must not type outside insert mode.
+        const printable = event.key?.length === 1 || event.key === "Dead";
         if (state.mode !== "insert" && printable && !event.metaKey) event.preventDefault();
         return;
       }
-      if (composition || restoring) {
+      if (restoring) {
         // Runs once the composed lines are restored, so the restore cannot hide its edits.
         queued.push(key);
         event.preventDefault();

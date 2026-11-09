@@ -53,14 +53,16 @@ function characterFromCode(code, shift) {
 }
 
 // Returns undefined for keys Helix should leave alone, such as Cmd shortcuts.
-export function keyFromEvent(event) {
-  if (event.metaKey || event.isComposing) return undefined;
+// With `composing`, keys that are part of a macOS accent composition (dead keys
+// such as Option+i, and the key after one, reported as "ˆj") are named too.
+export function keyFromEvent(event, { composing = false } = {}) {
+  if (event.metaKey || (event.isComposing && !composing)) return undefined;
   if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(event.key)) return undefined;
   if (event.ctrlKey && event.altKey) return undefined;
 
   let name = NAMED[event.key];
   if (!name) {
-    if (event.altKey) name = characterFromCode(event.code, event.shiftKey);
+    if (event.altKey || (composing && event.key.length !== 1)) name = characterFromCode(event.code, event.shiftKey);
     else if (event.key.length === 1) name = event.ctrlKey ? event.key.toLowerCase() : event.key;
   }
   if (!name) return undefined;
@@ -68,13 +70,6 @@ export function keyFromEvent(event) {
   if (event.altKey) return `A-${name}`;
   if (event.ctrlKey) return `C-${name}`;
   return name;
-}
-
-// A key pressed while macOS composes an accent, as after Option+e: the key
-// reports the composition, so name it by its position on a US layout.
-export function composingKeyFromEvent(event) {
-  if (event.metaKey || event.ctrlKey || event.altKey) return undefined;
-  return characterFromCode(event.code, event.shiftKey);
 }
 
 // The character a key types when it is an argument, as in `f<key>` or `r<key>`.

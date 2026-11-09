@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { composingKeyFromEvent, keyFromEvent, loadRustSyntax } from "./index.js";
+import { keyFromEvent, loadRustSyntax } from "./index.js";
 import { Engine } from "./state.js";
 import { Text } from "./text.js";
 
@@ -134,8 +134,11 @@ describe("keys", () => {
     expect(keyFromEvent({ key: "Ç", code: "KeyC", altKey: true, shiftKey: true })).toBe("A-C");
     // After a macOS dead key, keys report the composition instead of themselves.
     expect(keyFromEvent({ key: "j", code: "KeyJ", isComposing: true })).toBeUndefined();
-    expect(composingKeyFromEvent({ key: "Process", code: "KeyJ", isComposing: true })).toBe("j");
-    expect(composingKeyFromEvent({ key: "Process", code: "KeyG", shiftKey: true, isComposing: true })).toBe("G");
+    // WebKit's events for Option+i and then j, outside insert mode.
+    expect(keyFromEvent({ key: "Dead", code: "KeyI", keyCode: 229, altKey: true, isComposing: true }, { composing: true })).toBe("A-i");
+    expect(keyFromEvent({ key: "ˆj", code: "KeyJ", keyCode: 74 }, { composing: true })).toBe("j");
+    // Insert mode leaves composed keys to the browser.
+    expect(keyFromEvent({ key: "ˆj", code: "KeyJ", keyCode: 74 })).toBeUndefined();
     expect(keyFromEvent({ key: "d", code: "KeyD", ctrlKey: true })).toBe("C-d");
     expect(keyFromEvent({ key: "Escape", code: "Escape" })).toBe("Esc");
     expect(keyFromEvent({ key: " ", code: "Space" })).toBe("Space");
