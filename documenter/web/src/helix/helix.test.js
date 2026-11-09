@@ -430,3 +430,39 @@ describe("jumps", () => {
     expect(session.keys("<C-o>").doc.last.command).toEqual({ type: "jumpFile", direction: -1 });
   });
 });
+
+describe("syntax selection", () => {
+  const range = (start, end) => ({ start: { line: 0, character: start }, end: { line: 0, character: end } });
+  // rust-analyzer's chain at `engine::Engine`: empty, `Engine`, the path, the line.
+  const chain = [range(8, 8), range(8, 14), range(0, 14), range(0, 15)];
+  const answer = (session, direction) => {
+    const { command } = session.doc.last;
+    expect(command).toMatchObject({ type: "syntaxSelect", direction });
+    session.doc.selections = session.helix.selectSyntax(direction, [chain], { text: session.doc.value, selections: session.doc.selections }).selections;
+    return session.state;
+  };
+
+  it("expands to the smallest larger range and shrinks to the largest smaller one", () => {
+    const session = editor("engine::⟨E⟩ngine;");
+    expect(answer(session.keys("<A-o>"), "expand")).toBe("engine::⟨Engine⟩;");
+    expect(answer(session.keys("<A-o>"), "expand")).toBe("⟨engine::Engine⟩;");
+    expect(session.keys("<A-i>").state).toBe("engine::⟨Engine⟩;");
+    expect(session.keys("<A-i>").state).toBe("engine::⟨E⟩ngine;");
+  });
+
+  it("ignores an answer for selections that moved while it was in flight", () => {
+    const session = editor("engine::⟨E⟩ngine;").keys("<A-o>l");
+    const result = session.helix.selectSyntax("expand", [chain], { text: session.doc.value, selections: session.doc.selections });
+    expect(result.selections).toBeUndefined();
+    expect(session.state).toBe("engine::E⟨n⟩gine;");
+  });
+
+  it("shrinks to the first child when there is no expansion to retrace", () => {
+    const session = editor("⟨engine::Engine⟩;").keys("<A-i>");
+    const { command } = session.doc.last;
+    expect(command).toMatchObject({ type: "syntaxSelect", direction: "shrink", positions: [{ line: 0, character: 0 }] });
+    const start = [range(0, 0), range(0, 6), range(0, 14), range(0, 15)];
+    session.doc.selections = session.helix.selectSyntax("shrink", [start], { text: session.doc.value, selections: session.doc.selections }).selections;
+    expect(session.state).toBe("⟨engine⟩::Engine;");
+  });
+});

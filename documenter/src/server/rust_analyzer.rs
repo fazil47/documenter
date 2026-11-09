@@ -42,6 +42,9 @@ impl NavigationKind {
     }
 }
 
+/// A range as `(line, character)` start and end, in UTF-16 code units.
+pub(super) type Range = ((u32, u32), (u32, u32));
+
 /// A target range in UTF-16 LSP coordinates, as zero-based (line, character).
 pub(super) struct Location {
     pub(super) path: PathBuf,
@@ -90,11 +93,58 @@ impl RustAnalyzer {
         text: &str,
         (line, character): (u32, u32),
     ) -> Result<Vec<Location>, NavigationError> {
+        let mut params = json!({ "position": { "line": line, "character": character } });
+        if matches!(kind, NavigationKind::References) {
+            params["context"] = json!({ "includeDeclaration": true });
+        }
+        let (response, indexing) = self
+            .document_request(path, text, kind.method(), params)
+            .await?;
+        let locations = parse_locations(response)?;
+        if locations.is_empty() && indexing {
+            return Err(NavigationError::Indexing);
+        }
+        Ok(locations)
+    }
+
+    /// The syntax ranges around each of `positions`, innermost first, for
+    /// expanding and shrinking selections. The protocol takes positions only, so
+    /// a node starting exactly at a position may be skipped in favour of the
+    /// token to its left.
+    pub(super) async fn selection_ranges(
+        &self,
+        path: &Path,
+        text: &str,
+        positions: &[(u32, u32)],
+    ) -> Result<Vec<Vec<Range>>, NavigationError> {
+        let positions: Vec<Value> = positions
+            .iter()
+            .map(|(line, character)| json!({ "line": line, "character": character }))
+            .collect();
+        let (response, _) = self
+            .document_request(
+                path,
+                text,
+                "textDocument/selectionRange",
+                json!({ "positions": positions }),
+            )
+            .await?;
+        Ok(parse_selection_ranges(&response))
+    }
+
+    // One request at a time: each opens the page's text, asks, and closes it
+    // again so rust-analyzer goes back to the file on disk. Also reports whether
+    // rust-analyzer is still loading, which explains empty answers.
+    async fn document_request(
+        &self,
+        path: &Path,
+        text: &str,
+        method: &str,
+        mut params: Value,
+    ) -> Result<(Value, bool), NavigationError> {
         let client = self.client().await?;
         let uri = Url::from_file_path(path)
             .map_err(|()| NavigationError::Failed("source path is not absolute".to_owned()))?;
-        // One lookup at a time: each opens the page's text, asks, and closes it
-        // again so rust-analyzer goes back to the file on disk.
         let _lookup = client.lookup.lock().await;
         client
             .notify(
@@ -104,29 +154,20 @@ impl RustAnalyzer {
                 }),
             )
             .await?;
-        let mut params = json!({
-            "textDocument": { "uri": uri },
-            "position": { "line": line, "character": character },
-        });
-        if matches!(kind, NavigationKind::References) {
-            params["context"] = json!({ "includeDeclaration": true });
-        }
-        let response = client.request(kind.method(), params).await;
+        params["textDocument"] = json!({ "uri": uri });
+        let response = client.request(method, params).await;
         client
             .notify(
                 "textDocument/didClose",
                 json!({ "textDocument": { "uri": uri } }),
             )
             .await?;
-        let locations = parse_locations(response?)?;
-        if locations.is_empty() && client.indexing() {
-            return Err(NavigationError::Indexing);
-        }
-        Ok(locations)
+        Ok((response?, client.indexing()))
     }
 
     /// Starts rust-analyzer if it is not running, as an editor does when a file
     /// opens, and reports whether it is still loading.
+    ///
     /// A server that exited is not restarted here; like Helix, it waits for the
     /// next goto command, so a crashing server is not respawned on every poll.
     pub(super) async fn status(&self) -> ServerStatus {
@@ -507,6 +548,34 @@ async fn read_message(reader: &mut BufReader<ChildStdout>) -> Option<Option<Valu
     Some(serde_json::from_slice(&body).ok())
 }
 
+// Each `SelectionRange` is a linked list from the innermost range outward.
+fn parse_selection_ranges(value: &Value) -> Vec<Vec<Range>> {
+    let position = |value: &Value| {
+        (
+            value["line"].as_u64().unwrap_or_default() as u32,
+            value["character"].as_u64().unwrap_or_default() as u32,
+        )
+    };
+    let Some(items) = value.as_array() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .map(|item| {
+            let mut chain = Vec::new();
+            let mut node = item;
+            while node.is_object() {
+                chain.push((
+                    position(&node["range"]["start"]),
+                    position(&node["range"]["end"]),
+                ));
+                node = &node["parent"];
+            }
+            chain
+        })
+        .collect()
+}
+
 fn parse_locations(value: Value) -> Result<Vec<Location>, NavigationError> {
     if value.is_null() {
         return Ok(Vec::new());
@@ -540,6 +609,22 @@ fn parse_locations(value: Value) -> Result<Vec<Location>, NavigationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_selection_range_chains_innermost_first() {
+        let range = |line: u32, start: u32, end: u32| json!({ "start": { "line": line, "character": start }, "end": { "line": line, "character": end } });
+        let chains = parse_selection_ranges(&json!([
+            { "range": range(0, 4, 7), "parent": { "range": range(0, 0, 12) } },
+            { "range": range(1, 0, 3) },
+        ]));
+        assert_eq!(
+            chains,
+            vec![
+                vec![((0, 4), (0, 7)), ((0, 0), (0, 12))],
+                vec![((1, 0), (1, 3))],
+            ]
+        );
+    }
 
     #[test]
     fn parses_locations_and_links() {

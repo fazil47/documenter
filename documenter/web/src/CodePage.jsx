@@ -23,7 +23,6 @@ const fileOptions = {
   }`,
 };
 
-const HELIX_STORAGE_KEY = "documenter.helix";
 const NAVIGATION_LABELS = {
   definition: "definition",
   declaration: "declaration",
@@ -66,22 +65,6 @@ function selectionTarget(editor) {
 }
 
 const MODE_LABELS = { normal: "NOR", insert: "INS", select: "SEL" };
-
-function storedHelix() {
-  try {
-    return window.localStorage.getItem(HELIX_STORAGE_KEY) === "on";
-  } catch {
-    return false;
-  }
-}
-
-function storeHelix(enabled) {
-  try {
-    window.localStorage.setItem(HELIX_STORAGE_KEY, enabled ? "on" : "off");
-  } catch {
-    // Storage can be unavailable; the toggle still works for this page.
-  }
-}
 
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 
@@ -167,7 +150,10 @@ export default function CodePage({ moduleId, workspaceRevision }) {
   const [status, setStatus] = useState("Loading…");
   const [error, setError] = useState("");
   const [externalChange, setExternalChange] = useState(false);
-  const [helixEnabled, setHelixEnabled] = useState(storedHelix);
+  // Saved by the server, so it survives new ports and cleared browser storage.
+  // Undefined until loaded; the editor waits for it so no keys type as plain text.
+  const [helixEnabled, setHelixEnabled] = useState(undefined);
+  const settingsWrite = useRef(Promise.resolve());
   const [editor, setEditor] = useState(undefined);
   const [editorFrame, setEditorFrame] = useState(null);
   const draft = useRef("");
@@ -360,6 +346,21 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     }
   }, [moduleId, openLocation]);
 
+  // Asks rust-analyzer for the syntax ranges around each selection's start.
+  const selectSyntax = useCallback(async ({ direction, positions }) => {
+    const content = current.current.editor?.getText() ?? "";
+    try {
+      const { ranges } = await api("/api/selection-ranges", {
+        method: "POST",
+        body: JSON.stringify({ module: moduleId, positions, content }),
+      });
+      if (current.current.editor?.getText() !== content) return;
+      helixActions.current?.selectSyntax(direction, ranges);
+    } catch (reason) {
+      helixActions.current?.notify(reason.message, true);
+    }
+  }, [moduleId]);
+
   const onHelixCommand = useCallback((command) => {
     // Returns an error for the Helix status line when the command cannot run.
     const leave = (force) => {
@@ -377,6 +378,8 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       load();
     } else if (command.type === "navigate") {
       navigate(command);
+    } else if (command.type === "syntaxSelect") {
+      selectSyntax(command);
     } else if (command.type === "jumpFile") {
       const state = window.history.state ?? {};
       if (!(command.direction < 0 ? state.helixOlder : state.helixNewer)) return undefined;
@@ -385,7 +388,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       window.history.go(command.direction);
     }
     return undefined;
-  }, [dirty, save, load, moduleId, navigate]);
+  }, [dirty, save, load, moduleId, navigate, selectSyntax]);
 
   const [helixStatus, actions] = useHelix({
     editor,
@@ -423,18 +426,29 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     return () => window.removeEventListener("pageshow", pageshow);
   }, []);
 
+  useEffect(() => {
+    api("/api/settings")
+      .then((settings) => setHelixEnabled(Boolean(settings.helix)))
+      .catch((reason) => {
+        setHelixEnabled(false);
+        setError(reason.message);
+      });
+  }, []);
+
   const toggleHelix = () => {
-    setHelixEnabled((current) => {
-      storeHelix(!current);
-      return !current;
-    });
+    const enabled = !helixEnabled;
+    setHelixEnabled(enabled);
+    // One save at a time, so the last toggle wins.
+    settingsWrite.current = settingsWrite.current
+      .then(() => api("/api/settings", { method: "PUT", body: JSON.stringify({ helix: enabled }) }))
+      .catch((reason) => setError(reason.message));
     editor?.focus();
   };
 
   if (!source && error) {
     return <main className="centered-state"><h1>Source unavailable</h1><p>{error}</p></main>;
   }
-  if (!source) return <main className="centered-state"><p>Loading source…</p></main>;
+  if (!source || helixEnabled === undefined) return <main className="centered-state"><p>Loading source…</p></main>;
 
   return (
     <main className="code-page">

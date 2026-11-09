@@ -125,7 +125,8 @@ Rust file with syntax highlighting and edits it in place. Saving uses the same
 `Cmd+S`/`Ctrl+S` shortcut and conflict detection as Markdown documents.
 
 The source page's **Helix** toggle turns on Helix-style modal editing. The
-setting is remembered in that browser. It supports normal, insert, and select
+setting is saved in `~/.config/documenter/settings.json` (or under
+`$XDG_CONFIG_HOME`), so it survives restarts. It supports normal, insert, and select
 modes, counts, registers, macros, `.` repeat, search, multiple selections, match
 mode (`m`), `gw` jump labels, and a `:` command line (`:w`, `:q`, `:wq`,
 `:reload`, `:sort`, and more).
@@ -136,6 +137,8 @@ status line shows its progress while it indexes:
 - `gd` goes to the definition, `gD` to the declaration, `gy` to the type
   definition, and `gi` to the implementation.
 - `gr` lists references.
+- `A-o` expands the selection to the enclosing syntax node and `A-i` shrinks it,
+  using rust-analyzer's selection ranges.
 
 A single result jumps directly, opening another module's source page if needed.
 Several results open a picker: type to filter, use the arrow keys or

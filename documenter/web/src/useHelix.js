@@ -100,13 +100,15 @@ function scrollToLine(container, line, block) {
 }
 
 // Drives a Pierre editor with Helix keys while `enabled`. Returns the status line
-// state and actions for the page: `jumpTo(target, { record })` and `notify(text, error)`.
+// state and actions for the page: `jumpTo(target, { record })`,
+// `selectSyntax(direction, chains)`, and `notify(text, error)`.
 export default function useHelix({ editor, container, enabled, fileName, onCommand }) {
   const [status, setStatus] = useState(INITIAL_STATUS);
   const latest = useRef({});
   const engineActions = useRef(undefined);
   const [actions] = useState(() => ({
     jumpTo: (target, options) => engineActions.current?.jumpTo(target, options),
+    selectSyntax: (direction, chains) => engineActions.current?.selectSyntax(direction, chains),
     notify: (text, error = false) => setStatus((current) => ({ ...current, message: { text, error } })),
   }));
   latest.current = { editor, fileName, onCommand };
@@ -216,6 +218,10 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     engineActions.current = {
       jumpTo: (target, options) => {
         apply(state.jumpTo(target, snapshot(), options));
+        syncCaret();
+      },
+      selectSyntax: (direction, chains) => {
+        apply(state.selectSyntax(direction, chains, snapshot()));
         syncCaret();
       },
     };

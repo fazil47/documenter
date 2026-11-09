@@ -1,6 +1,7 @@
 //! Local documentation server and repository write boundary.
 
 mod rust_analyzer;
+mod settings;
 mod storage;
 mod watch;
 
@@ -29,6 +30,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
 use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer, ServerStatus};
+use self::settings::{Settings, Store as SettingsStore};
 use self::storage::atomic_write;
 use crate::analysis::{DrawingCollection, Workspace, markdown_title};
 use crate::drawing::{
@@ -64,6 +66,7 @@ struct AppState {
     documents: RwLock<HashMap<PathBuf, String>>,
     scheduled_refresh: StdMutex<Option<JoinHandle<()>>>,
     rust_analyzer: RustAnalyzer,
+    settings: SettingsStore,
 }
 
 struct ModelState {
@@ -100,6 +103,7 @@ impl DocumentationServer {
             documents: RwLock::new(normalize_documents(&root, documents)),
             scheduled_refresh: StdMutex::new(None),
             rust_analyzer: RustAnalyzer::new(root.clone()),
+            settings: SettingsStore::for_user(),
         });
         let watcher = watch::WorkspaceWatcher::start(&root, Arc::downgrade(&state))?;
         Ok(Self {
@@ -278,6 +282,8 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/source", get(get_source).put(put_source))
         .route("/api/navigate", post(navigate))
         .route("/api/language-server", get(language_server))
+        .route("/api/settings", get(get_settings).put(put_settings))
+        .route("/api/selection-ranges", post(selection_ranges))
         .route("/api/drawing", get(get_drawing).put(put_drawing))
         .route("/api/drawings", post(create_drawing))
         .route("/api/drawing-file", get(get_drawing_file))
@@ -573,6 +579,30 @@ struct NavigateRequest {
     content: String,
 }
 
+#[derive(Deserialize)]
+struct SelectionRangesRequest {
+    module: String,
+    positions: Vec<PositionBody>,
+    content: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PositionBody {
+    line: u32,
+    character: u32,
+}
+
+#[derive(Serialize)]
+struct RangeBody {
+    start: PositionBody,
+    end: PositionBody,
+}
+
+#[derive(Serialize)]
+struct SelectionRangesResponse {
+    ranges: Vec<Vec<RangeBody>>,
+}
+
 #[derive(Serialize)]
 struct NavigateResponse {
     locations: Vec<LocationResponse>,
@@ -589,12 +619,81 @@ struct LocationResponse {
     preview: String,
 }
 
+async fn get_settings(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+) -> ApiResult<Json<Settings>> {
+    state.authorize(&query.token)?;
+    Ok(Json(state.settings.load()))
+}
+
+async fn put_settings(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+    Json(body): Json<Settings>,
+) -> ApiResult<Json<Settings>> {
+    state.authorize(&query.token)?;
+    state
+        .settings
+        .save(&body)
+        .map_err(|error| ApiError::internal("saving settings", error))?;
+    Ok(Json(body))
+}
+
 async fn language_server(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AuthQuery>,
 ) -> ApiResult<Json<ServerStatus>> {
     state.authorize(&query.token)?;
     Ok(Json(state.rust_analyzer.status().await))
+}
+
+async fn selection_ranges(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AuthQuery>,
+    Json(body): Json<SelectionRangesRequest>,
+) -> ApiResult<Json<SelectionRangesResponse>> {
+    state.authorize(&query.token)?;
+    let path = source_path(&state, &body.module).await?;
+    ensure_safe_existing_file(&state.root, &path)?;
+    let positions: Vec<(u32, u32)> = body
+        .positions
+        .iter()
+        .map(|position| (position.line, position.character))
+        .collect();
+    let chains = state
+        .rust_analyzer
+        .selection_ranges(&path, &body.content, &positions)
+        .await
+        .map_err(navigation_error)?;
+    let position = |(line, character)| PositionBody { line, character };
+    let ranges = chains
+        .into_iter()
+        .map(|chain| {
+            chain
+                .into_iter()
+                .map(|(start, end)| RangeBody {
+                    start: position(start),
+                    end: position(end),
+                })
+                .collect()
+        })
+        .collect();
+    Ok(Json(SelectionRangesResponse { ranges }))
+}
+
+fn navigation_error(error: NavigationError) -> ApiError {
+    match error {
+        NavigationError::NotInstalled => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rust-analyzer is not installed; install it with `rustup component add rust-analyzer`",
+        ),
+        NavigationError::Indexing => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rust-analyzer is still indexing; try again in a moment",
+        ),
+        NavigationError::Failed(message) => ApiError::new(StatusCode::BAD_GATEWAY, message),
+    }
 }
 
 async fn navigate(
@@ -609,17 +708,7 @@ async fn navigate(
         .rust_analyzer
         .navigate(body.kind, &path, &body.content, (body.line, body.character))
         .await
-        .map_err(|error| match error {
-            NavigationError::NotInstalled => ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "rust-analyzer is not installed; install it with `rustup component add rust-analyzer`",
-            ),
-            NavigationError::Indexing => ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "rust-analyzer is still indexing; try again in a moment",
-            ),
-            NavigationError::Failed(message) => ApiError::new(StatusCode::BAD_GATEWAY, message),
-        })?;
+        .map_err(navigation_error)?;
     let mut files = HashMap::new();
     let mut previews = Vec::with_capacity(locations.len());
     for location in &locations {
@@ -1402,6 +1491,53 @@ mod tests {
         };
         assert_eq!(status.0, StatusCode::OK);
         assert_eq!(status.1["state"], "ready", "{}", status.1);
+
+        let ranges = json_request(
+            &app,
+            "POST",
+            "/api/selection-ranges?token=test-token",
+            serde_json::json!({
+                "module": "sample",
+                "positions": [{ "line": 2, "character": 13 }],
+                "content": lib,
+            }),
+        )
+        .await;
+        assert_eq!(ranges.0, StatusCode::OK, "{}", ranges.1);
+        let chain = ranges.1["ranges"][0].as_array().unwrap();
+        // Innermost first: an empty range at the position, then `Engine`.
+        assert_eq!(
+            chain[1],
+            serde_json::json!({
+                "start": { "line": 2, "character": 12 },
+                "end": { "line": 2, "character": 18 },
+            })
+        );
+        assert!(chain.len() > 2, "{}", ranges.1);
+    }
+
+    #[tokio::test]
+    async fn remembers_settings_across_requests() {
+        let project = sample_project();
+        let app = test_router(project.path());
+        let get = || {
+            json_request(
+                &app,
+                "GET",
+                "/api/settings?token=test-token",
+                serde_json::Value::Null,
+            )
+        };
+        assert_eq!(get().await.1, serde_json::json!({ "helix": false }));
+        let saved = json_request(
+            &app,
+            "PUT",
+            "/api/settings?token=test-token",
+            serde_json::json!({ "helix": true }),
+        )
+        .await;
+        assert_eq!(saved.0, StatusCode::OK);
+        assert_eq!(get().await.1, serde_json::json!({ "helix": true }));
     }
 
     #[tokio::test]
@@ -1461,7 +1597,8 @@ mod tests {
             revisions,
             documents: RwLock::new(normalize_documents(&root, documents)),
             scheduled_refresh: StdMutex::new(None),
-            rust_analyzer: RustAnalyzer::new(root),
+            rust_analyzer: RustAnalyzer::new(root.clone()),
+            settings: SettingsStore::at(Some(root.join("target/test-settings.json"))),
         }))
     }
 

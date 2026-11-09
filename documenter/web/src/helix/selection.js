@@ -71,3 +71,8 @@ export function normalize(ranges, primary) {
 export function rangeText(text, range) {
   return text.slice(from(range), to(range));
 }
+
+// Identifies a set of ranges, to tell whether a selection is unchanged.
+export function signature(ranges) {
+  return ranges.map((range) => `${range.anchor}:${range.head}`).join(",");
+}

@@ -23,6 +23,11 @@ export class HelixState {
     return this.#engine.jumpTo(target, snapshot, options);
   }
 
+  // Finishes a `syntaxSelect` command with the syntax ranges around each selection.
+  selectSyntax(direction, chains, snapshot) {
+    return this.#engine.selectSyntax(direction, chains, snapshot);
+  }
+
   // Finishes a `pasteClipboard` command with the clipboard's text.
   pasteText(value, snapshot, command) {
     return this.#engine.pasteText(value, snapshot, command);

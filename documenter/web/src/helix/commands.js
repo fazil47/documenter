@@ -18,6 +18,7 @@ import {
   point,
   putCursor,
   rangeText,
+  signature,
   to,
 } from "./selection.js";
 import { wordLabels } from "./labels.js";
@@ -673,6 +674,25 @@ function navigate(kind) {
   };
 }
 
+// Expanding and shrinking to syntax ranges that rust-analyzer reports around
+// each selection's start; the page answers through `selectSyntax`. Shrinking
+// first retraces earlier expansions, as Helix does.
+function syntaxSelect(direction) {
+  return (cx) => {
+    const previous = direction === "shrink" ? cx.state.popSyntaxHistory(cx.ranges) : undefined;
+    if (previous) {
+      cx.select(previous.ranges, previous.primary);
+      return;
+    }
+    cx.state.syntaxRequest = signature(cx.ranges);
+    cx.command({
+      type: "syntaxSelect",
+      direction,
+      positions: cx.ranges.map((range) => cx.text.positionAt(from(range))),
+    });
+  };
+}
+
 // Scrolling -----------------------------------------------------------------
 
 function scrollTo(align) {
@@ -965,10 +985,10 @@ export const KEYMAP = {
     h: NEEDS_LANGUAGE_SERVER,
   },
 
-  "A-o": NEEDS_TREE_SITTER,
-  "A-Up": NEEDS_TREE_SITTER,
-  "A-i": NEEDS_TREE_SITTER,
-  "A-Down": NEEDS_TREE_SITTER,
+  "A-o": syntaxSelect("expand"),
+  "A-Up": syntaxSelect("expand"),
+  "A-i": syntaxSelect("shrink"),
+  "A-Down": syntaxSelect("shrink"),
   "A-p": NEEDS_TREE_SITTER,
   "A-Left": NEEDS_TREE_SITTER,
   "A-n": NEEDS_TREE_SITTER,

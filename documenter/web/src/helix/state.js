@@ -4,7 +4,7 @@ import { Context, KEYMAP, pasteValues } from "./commands.js";
 import { insertKey } from "./insert.js";
 import { submitPrompt } from "./prompt.js";
 import { keyCharacter } from "./keys.js";
-import { caret, from, isForward, normalize, point, putCursor, to } from "./selection.js";
+import { caret, from, isForward, normalize, point, putCursor, signature, to } from "./selection.js";
 import { Text } from "./text.js";
 
 const PROMPT_LABELS = {
@@ -39,6 +39,8 @@ export class Engine {
     this.pageLines = 30;
     this.visibleLines = undefined;
     this.labels = undefined;
+    this.syntaxHistory = [];
+    this.syntaxRequest = undefined;
   }
 
   // `snapshot` is `{ text, selections, fileName, pageLines, visibleLines }`,
@@ -76,6 +78,42 @@ export class Engine {
     if (record) this.pushJump(cx);
     cx.select([{ anchor: text.offsetAt(target.start), head: text.offsetAt(target.end) }], 0);
     return this.finish(cx, true);
+  }
+
+  // Applies a `syntaxSelect` command's answer: for each selection, the ranges
+  // ({ start, end } positions) around its start, innermost first.
+  selectSyntax(direction, chains, snapshot) {
+    const text = new Text(snapshot.text);
+    const cx = new Context(this, text, this.readSelection(text, snapshot.selections ?? []));
+    // An answer for selections that have since moved, or after entering insert mode, is stale.
+    const current = this.mode !== "insert" && signature(cx.ranges) === this.syntaxRequest;
+    this.syntaxRequest = undefined;
+    if (current && chains.length === cx.ranges.length) {
+      cx.move((range, index) => {
+        const start = from(range);
+        const end = to(range);
+        const candidates = chains[index].map((candidate) => [text.offsetAt(candidate.start), text.offsetAt(candidate.end)]);
+        const target = direction === "expand"
+          ? candidates.find(([left, right]) => left <= start && right >= end && right - left > end - start)
+          : candidates.findLast(([left, right]) => left >= start && right <= end && right > left && right - left < end - start);
+        if (!target) return range;
+        return isForward(range) ? { anchor: target[0], head: target[1] } : { anchor: target[1], head: target[0] };
+      });
+      // Like Helix, shrinking first retraces expansions; a new chain of expansions starts fresh.
+      if (direction === "expand" && signature(cx.output.ranges) !== signature(cx.ranges)) {
+        if (this.syntaxHistory.at(-1)?.signature !== signature(cx.ranges)) this.syntaxHistory = [];
+        this.syntaxHistory.push({ ranges: cx.ranges, primary: cx.primary, signature: signature(cx.output.ranges) });
+      }
+    }
+    return this.finish(cx, true);
+  }
+
+  // The selection before the expansion that produced `ranges`, if any.
+  popSyntaxHistory(ranges) {
+    const last = this.syntaxHistory.pop();
+    if (last?.signature === signature(ranges)) return last;
+    this.syntaxHistory = [];
+    return undefined;
   }
 
   normalKey(key, text, selection, replaying) {
@@ -351,8 +389,4 @@ export class Engine {
 
 function emptyPending() {
   return { count: "", register: undefined, awaitRegister: false, keys: [], raw: [] };
-}
-
-function signature(ranges) {
-  return ranges.map((range) => `${range.anchor}:${range.head}`).join(",");
 }
