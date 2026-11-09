@@ -70,6 +70,13 @@ export function keyFromEvent(event) {
   return name;
 }
 
+// A key pressed while macOS composes an accent, as after Option+e: the key
+// reports the composition, so name it by its position on a US layout.
+export function composingKeyFromEvent(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return undefined;
+  return characterFromCode(event.code, event.shiftKey);
+}
+
 // The character a key types when it is an argument, as in `f<key>` or `r<key>`.
 export function keyCharacter(key) {
   if (key === "Space") return " ";

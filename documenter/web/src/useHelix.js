@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import runtimeWasm from "web-tree-sitter/web-tree-sitter.wasm?url";
 import rustWasm from "tree-sitter-rust/tree-sitter-rust.wasm?url";
 
-import { HelixState, keyFromEvent, loadRustSyntax } from "./helix/index.js";
+import { HelixState, composingKeyFromEvent, keyFromEvent, loadRustSyntax } from "./helix/index.js";
 
 const INITIAL_STATUS = { mode: "normal", pending: "", prompt: undefined, message: undefined, recording: undefined };
 
@@ -221,13 +221,30 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
       return result;
     }
 
+    // macOS dead keys (Option+e, Option+i, Option+n, ...) start an accent
+    // composition that the page cannot prevent. Outside insert mode, keep Pierre
+    // from inserting the accent and restore the lines it was drawn into.
+    let composition;
+    let restoring;
+    let ending = false;
+    const queued = [];
+
     const keydown = (event) => {
       if (!latest.current.editor) return;
-      const key = keyFromEvent(event);
+      // While an accent composes, keys report the composition rather than themselves.
+      const accent = composition || restoring || (state.mode !== "insert" && (event.isComposing || event.keyCode === 229));
+      const key = accent ? composingKeyFromEvent(event) : keyFromEvent(event);
       if (!key) {
         // Keys Helix cannot name (AltGr, dead keys, composition) must not type outside insert mode.
-        const printable = event.key?.length === 1 || event.key === "Dead" || event.isComposing;
+        const printable = event.key?.length === 1 || event.key === "Dead" || Boolean(accent);
         if (state.mode !== "insert" && printable && !event.metaKey) event.preventDefault();
+        return;
+      }
+      if (composition || restoring) {
+        // Runs once the composed lines are restored, so the restore cannot hide its edits.
+        queued.push(key);
+        event.preventDefault();
+        event.stopPropagation();
         return;
       }
       if (dispatch(key, false).handled) {
@@ -236,8 +253,33 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
       }
     };
 
+    const inCode = (event) => event.composedPath().some((node) => node.hasAttribute?.("data-content"));
+    const compositionstart = (event) => {
+      if (state.mode === "insert" || !latest.current.editor || !inCode(event)) return;
+      const lines = lineElements(container);
+      const indexes = new Set((latest.current.editor.getViewState().selections ?? []).flatMap((selection) => [selection.start.line, selection.end.line]));
+      composition = [...indexes].flatMap((index) => (lines[index] ? [[lines[index], [...lines[index].childNodes].map((node) => node.cloneNode(true))]] : []));
+    };
+    const compositionend = (event) => {
+      if (!composition || ending) return;
+      restoring = composition;
+      composition = undefined;
+      event.stopPropagation();
+      // Pierre still has to hear that the composition ended, with nothing to insert.
+      ending = true;
+      event.composedPath()[0].dispatchEvent(new CompositionEvent("compositionend", { data: "", bubbles: true, composed: true }));
+      ending = false;
+      requestAnimationFrame(() => {
+        for (const [line, children] of restoring) line.replaceChildren(...children);
+        restoring = undefined;
+        for (const key of queued.splice(0)) dispatch(key, false);
+        syncCaret();
+      });
+    };
 
     container.addEventListener("keydown", keydown, true);
+    container.addEventListener("compositionstart", compositionstart, true);
+    container.addEventListener("compositionend", compositionend, true);
     // Pierre settles a mouse selection after the event, so read it on the next frame.
     const pointerup = () => requestAnimationFrame(syncCaret);
     container.addEventListener("pointerup", pointerup, true);
@@ -250,6 +292,8 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     setStatus({ ...INITIAL_STATUS, mode: state.mode });
     return () => {
       container.removeEventListener("keydown", keydown, true);
+      container.removeEventListener("compositionstart", compositionstart, true);
+      container.removeEventListener("compositionend", compositionend, true);
       container.removeEventListener("pointerup", pointerup, true);
       container.style.removeProperty("--helix-head-shift");
       engineActions.current = undefined;

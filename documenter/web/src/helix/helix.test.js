@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { keyFromEvent, loadRustSyntax } from "./index.js";
+import { composingKeyFromEvent, keyFromEvent, loadRustSyntax } from "./index.js";
 import { Engine } from "./state.js";
 import { Text } from "./text.js";
 
@@ -132,6 +132,10 @@ describe("keys", () => {
     expect(keyFromEvent({ key: "W", code: "KeyW", shiftKey: true })).toBe("W");
     expect(keyFromEvent({ key: "…", code: "Semicolon", altKey: true })).toBe("A-;");
     expect(keyFromEvent({ key: "Ç", code: "KeyC", altKey: true, shiftKey: true })).toBe("A-C");
+    // After a macOS dead key, keys report the composition instead of themselves.
+    expect(keyFromEvent({ key: "j", code: "KeyJ", isComposing: true })).toBeUndefined();
+    expect(composingKeyFromEvent({ key: "Process", code: "KeyJ", isComposing: true })).toBe("j");
+    expect(composingKeyFromEvent({ key: "Process", code: "KeyG", shiftKey: true, isComposing: true })).toBe("G");
     expect(keyFromEvent({ key: "d", code: "KeyD", ctrlKey: true })).toBe("C-d");
     expect(keyFromEvent({ key: "Escape", code: "Escape" })).toBe("Esc");
     expect(keyFromEvent({ key: " ", code: "Space" })).toBe("Space");

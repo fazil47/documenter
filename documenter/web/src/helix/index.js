@@ -2,7 +2,7 @@
 
 import { Engine } from "./state.js";
 
-export { keyFromEvent } from "./keys.js";
+export { composingKeyFromEvent, keyFromEvent } from "./keys.js";
 export { loadRustSyntax } from "./syntax.js";
 
 // The engine's public face: keys and clipboard text in, edits and selections out.
