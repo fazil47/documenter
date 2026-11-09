@@ -39,17 +39,21 @@ export class Engine {
     this.pageLines = 30;
     this.visibleLines = undefined;
     this.labels = undefined;
-    this.syntaxHistory = [];
-    this.syntaxRequest = undefined;
+    this.syntax = undefined;
+    // Selections that `A-o` expanded from, for `A-i` to retrace.
+    this.objectSelections = [];
   }
 
-  // `snapshot` is `{ text, selections, fileName, pageLines, visibleLines }`,
-  // with selections in Pierre's shape.
+  // `snapshot` is `{ text, selections, fileName, pageLines, visibleLines, syntax }`,
+  // with selections in Pierre's shape and `syntax(text)` returning a syntax tree.
   handleKey(key, snapshot, { replaying = false } = {}) {
     this.message = undefined;
+    // Expansions belong to one file's tree.
+    if (snapshot.fileName && snapshot.fileName !== this.fileName) this.objectSelections = [];
     this.fileName = snapshot.fileName ?? this.fileName;
     this.pageLines = snapshot.pageLines ?? this.pageLines;
     this.visibleLines = snapshot.visibleLines;
+    this.syntax = snapshot.syntax;
     if (this.recording && !replaying) this.recording.keys.push(key);
     const text = new Text(snapshot.text);
     const selection = this.readSelection(text, snapshot.selections ?? []);
@@ -78,42 +82,6 @@ export class Engine {
     if (record) this.pushJump(cx);
     cx.select([{ anchor: text.offsetAt(target.start), head: text.offsetAt(target.end) }], 0);
     return this.finish(cx, true);
-  }
-
-  // Applies a `syntaxSelect` command's answer: for each selection, the ranges
-  // ({ start, end } positions) around its start, innermost first.
-  selectSyntax(direction, chains, snapshot) {
-    const text = new Text(snapshot.text);
-    const cx = new Context(this, text, this.readSelection(text, snapshot.selections ?? []));
-    // An answer for selections that have since moved, or after entering insert mode, is stale.
-    const current = this.mode !== "insert" && signature(cx.ranges) === this.syntaxRequest;
-    this.syntaxRequest = undefined;
-    if (current && chains.length === cx.ranges.length) {
-      cx.move((range, index) => {
-        const start = from(range);
-        const end = to(range);
-        const candidates = chains[index].map((candidate) => [text.offsetAt(candidate.start), text.offsetAt(candidate.end)]);
-        const target = direction === "expand"
-          ? candidates.find(([left, right]) => left <= start && right >= end && right - left > end - start)
-          : candidates.findLast(([left, right]) => left >= start && right <= end && right > left && right - left < end - start);
-        if (!target) return range;
-        return isForward(range) ? { anchor: target[0], head: target[1] } : { anchor: target[1], head: target[0] };
-      });
-      // Like Helix, shrinking first retraces expansions; a new chain of expansions starts fresh.
-      if (direction === "expand" && signature(cx.output.ranges) !== signature(cx.ranges)) {
-        if (this.syntaxHistory.at(-1)?.signature !== signature(cx.ranges)) this.syntaxHistory = [];
-        this.syntaxHistory.push({ ranges: cx.ranges, primary: cx.primary, signature: signature(cx.output.ranges) });
-      }
-    }
-    return this.finish(cx, true);
-  }
-
-  // The selection before the expansion that produced `ranges`, if any.
-  popSyntaxHistory(ranges) {
-    const last = this.syntaxHistory.pop();
-    if (last?.signature === signature(ranges)) return last;
-    this.syntaxHistory = [];
-    return undefined;
   }
 
   normalKey(key, text, selection, replaying) {

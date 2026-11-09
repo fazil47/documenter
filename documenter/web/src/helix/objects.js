@@ -173,5 +173,3 @@ export function textObject(text, range, kind, around, count = 1) {
     ? { anchor: pair[0], head: pair[1] + 1 }
     : { anchor: pair[0] + 1, head: pair[1] };
 }
-
-export const TREE_SITTER_OBJECTS = new Set(["f", "t", "a", "c", "T", "e", "x", "g"]);

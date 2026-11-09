@@ -3,6 +3,7 @@
 import { Engine } from "./state.js";
 
 export { keyFromEvent } from "./keys.js";
+export { loadRustSyntax } from "./syntax.js";
 
 // The engine's public face: keys and clipboard text in, edits and selections out.
 export class HelixState {
@@ -12,8 +13,9 @@ export class HelixState {
     return this.#engine.mode;
   }
 
-  // `snapshot` is `{ text, selections, fileName, pageLines, visibleLines }` with
-  // Pierre selections. Results list the primary selection last, as Pierre does.
+  // `snapshot` is `{ text, selections, fileName, pageLines, visibleLines, syntax }`
+  // with Pierre selections and `syntax` from `loadRustSyntax`. Results list the
+  // primary selection last, as Pierre does.
   handleKey(key, snapshot, options) {
     return this.#engine.handleKey(key, snapshot, options);
   }
@@ -21,11 +23,6 @@ export class HelixState {
   // Selects a navigation target in the current file, recording a jump unless `record` is false.
   jumpTo(target, snapshot, options) {
     return this.#engine.jumpTo(target, snapshot, options);
-  }
-
-  // Finishes a `syntaxSelect` command with the syntax ranges around each selection.
-  selectSyntax(direction, chains, snapshot) {
-    return this.#engine.selectSyntax(direction, chains, snapshot);
   }
 
   // Finishes a `pasteClipboard` command with the clipboard's text.

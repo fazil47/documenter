@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
-import { HelixState, keyFromEvent } from "./helix/index.js";
+import runtimeWasm from "web-tree-sitter/web-tree-sitter.wasm?url";
+import rustWasm from "tree-sitter-rust/tree-sitter-rust.wasm?url";
+
+import { HelixState, keyFromEvent, loadRustSyntax } from "./helix/index.js";
 
 const INITIAL_STATUS = { mode: "normal", pending: "", prompt: undefined, message: undefined, recording: undefined };
 
@@ -93,6 +96,17 @@ function caretShift(editor) {
   return shifts.size === 1 ? [...shifts][0] : "0 0";
 }
 
+// Loaded once, the first time Helix mode turns on; a failed load is retried next time.
+let rustSyntax;
+
+function loadSyntax() {
+  rustSyntax ??= loadRustSyntax({ runtime: runtimeWasm, grammar: rustWasm }).catch((error) => {
+    rustSyntax = undefined;
+    throw error;
+  });
+  return rustSyntax;
+}
+
 function scrollToLine(container, line, block) {
   // The first line also reveals the file header above it.
   if (line === 0 && block !== "end") container.scrollTo({ top: 0 });
@@ -100,18 +114,29 @@ function scrollToLine(container, line, block) {
 }
 
 // Drives a Pierre editor with Helix keys while `enabled`. Returns the status line
-// state and actions for the page: `jumpTo(target, { record })`,
-// `selectSyntax(direction, chains)`, and `notify(text, error)`.
+// state and actions for the page: `jumpTo(target, { record })` and `notify(text, error)`.
 export default function useHelix({ editor, container, enabled, fileName, onCommand }) {
   const [status, setStatus] = useState(INITIAL_STATUS);
   const latest = useRef({});
   const engineActions = useRef(undefined);
   const [actions] = useState(() => ({
     jumpTo: (target, options) => engineActions.current?.jumpTo(target, options),
-    selectSyntax: (direction, chains) => engineActions.current?.selectSyntax(direction, chains),
     notify: (text, error = false) => setStatus((current) => ({ ...current, message: { text, error } })),
   }));
-  latest.current = { editor, fileName, onCommand };
+  const [syntax, setSyntax] = useState(undefined);
+  latest.current = { editor, fileName, onCommand, syntax };
+
+  useEffect(() => {
+    if (!enabled || syntax) return undefined;
+    let live = true;
+    loadSyntax().then(
+      (loaded) => live && setSyntax(() => loaded),
+      (error) => live && actions.notify(`could not load the Rust grammar: ${error.message}`, true),
+    );
+    return () => {
+      live = false;
+    };
+  }, [enabled, syntax, actions]);
 
   useEffect(() => {
     if (!enabled || !container) return undefined;
@@ -126,6 +151,7 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
         fileName: latest.current.fileName,
         pageLines: view.pageLines,
         visibleLines: view.visibleLines,
+        syntax: latest.current.syntax,
       };
     };
 
@@ -218,10 +244,6 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     engineActions.current = {
       jumpTo: (target, options) => {
         apply(state.jumpTo(target, snapshot(), options));
-        syncCaret();
-      },
-      selectSyntax: (direction, chains) => {
-        apply(state.selectSyntax(direction, chains, snapshot()));
         syncCaret();
       },
     };

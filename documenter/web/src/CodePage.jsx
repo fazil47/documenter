@@ -346,21 +346,6 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     }
   }, [moduleId, openLocation]);
 
-  // Asks rust-analyzer for the syntax ranges around each selection's start.
-  const selectSyntax = useCallback(async ({ direction, positions }) => {
-    const content = current.current.editor?.getText() ?? "";
-    try {
-      const { ranges } = await api("/api/selection-ranges", {
-        method: "POST",
-        body: JSON.stringify({ module: moduleId, positions, content }),
-      });
-      if (current.current.editor?.getText() !== content) return;
-      helixActions.current?.selectSyntax(direction, ranges);
-    } catch (reason) {
-      helixActions.current?.notify(reason.message, true);
-    }
-  }, [moduleId]);
-
   const onHelixCommand = useCallback((command) => {
     // Returns an error for the Helix status line when the command cannot run.
     const leave = (force) => {
@@ -378,8 +363,6 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       load();
     } else if (command.type === "navigate") {
       navigate(command);
-    } else if (command.type === "syntaxSelect") {
-      selectSyntax(command);
     } else if (command.type === "jumpFile") {
       const state = window.history.state ?? {};
       if (!(command.direction < 0 ? state.helixOlder : state.helixNewer)) return undefined;
@@ -388,7 +371,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       window.history.go(command.direction);
     }
     return undefined;
-  }, [dirty, save, load, moduleId, navigate, selectSyntax]);
+  }, [dirty, save, load, moduleId, navigate]);
 
   const [helixStatus, actions] = useHelix({
     editor,

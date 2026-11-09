@@ -1,6 +1,6 @@
 // Helix normal and select mode: the command context and the keymap.
 
-import { TREE_SITTER_OBJECTS, matchingBracket, pairFor, surroundingPair, textObject } from "./objects.js";
+import { matchingBracket, pairFor, surroundingPair, textObject } from "./objects.js";
 import {
   findCharacter,
   nextParagraph,
@@ -69,6 +69,13 @@ export class Context {
 
   command(command) {
     this.commandRequest = command;
+  }
+
+  // The text's syntax tree, or undefined (with a message) while it loads.
+  tree() {
+    const tree = this.state.syntax?.(this.text.value);
+    if (!tree) this.message("the syntax tree is still loading", true);
+    return tree;
   }
 
   message(text, error = false) {
@@ -206,7 +213,7 @@ function unsupported(reason) {
   return (cx) => cx.message(reason, true);
 }
 
-const NEEDS_TREE_SITTER = unsupported("this command needs tree-sitter, which the browser editor does not have");
+const NEEDS_DIFF = unsupported("this text object needs a version control diff, which the browser editor does not have");
 const NEEDS_LANGUAGE_SERVER = unsupported("this command needs a language server, which the browser editor does not have");
 export const NEEDS_SHELL = unsupported("shell commands are not available in the browser");
 const NEEDS_PICKER = unsupported("pickers are not available in the browser editor");
@@ -564,13 +571,21 @@ function splitOnNewlines(cx) {
 
 // Match mode ---------------------------------------------------------------
 
+// Text objects found by the tree-sitter query in rust_textobjects.scm.
+const SYNTAX_OBJECTS = { f: "function", t: "class", a: "parameter", c: "comment", T: "test", e: "entry", x: "xml-element" };
+
 function selectTextObject(around) {
   return {
     arity: 1,
     run: (cx) => {
       const [kind] = cx.args;
-      if (TREE_SITTER_OBJECTS.has(kind)) {
-        NEEDS_TREE_SITTER(cx);
+      if (kind === "g") {
+        NEEDS_DIFF(cx);
+        return;
+      }
+      if (SYNTAX_OBJECTS[kind]) {
+        const tree = cx.tree();
+        if (tree) cx.move((range) => tree.textObject(range, SYNTAX_OBJECTS[kind], around));
         return;
       }
       cx.move((range) => textObject(cx.text, range, kind, around, cx.count) ?? range);
@@ -674,23 +689,56 @@ function navigate(kind) {
   };
 }
 
-// Expanding and shrinking to syntax ranges that rust-analyzer reports around
-// each selection's start; the page answers through `selectSyntax`. Shrinking
-// first retraces earlier expansions, as Helix does.
-function syntaxSelect(direction) {
+// Syntax tree --------------------------------------------------------------
+
+function syntaxMove(transform) {
   return (cx) => {
-    const previous = direction === "shrink" ? cx.state.popSyntaxHistory(cx.ranges) : undefined;
-    if (previous) {
+    const tree = cx.tree();
+    if (tree) cx.move((range) => transform(tree, range, cx));
+  };
+}
+
+// Commands that turn each selection into several, such as `A-a`.
+function syntaxSplit(split) {
+  return (cx) => {
+    const tree = cx.tree();
+    if (!tree) return;
+    const groups = cx.ranges.map((range) => split(tree, range));
+    const primary = groups.slice(0, cx.primary).reduce((total, group) => total + group.length, 0);
+    cx.select(groups.flat(), primary);
+  };
+}
+
+// Like Helix, expanding remembers the selection so shrinking can retrace it.
+function expandSelection(cx) {
+  const tree = cx.tree();
+  if (!tree) return;
+  const ranges = cx.ranges.map((range) => tree.expand(range));
+  if (signature(ranges) === signature(cx.ranges)) return;
+  cx.state.objectSelections.push({ ranges: cx.ranges, primary: cx.primary });
+  cx.select(ranges);
+}
+
+function shrinkSelection(cx) {
+  const previous = cx.state.objectSelections.pop();
+  if (previous) {
+    const contained = previous.ranges.every((inner) => cx.ranges.some((outer) => from(outer) <= from(inner) && to(inner) <= to(outer)));
+    if (contained) {
       cx.select(previous.ranges, previous.primary);
       return;
     }
-    cx.state.syntaxRequest = signature(cx.ranges);
-    cx.command({
-      type: "syntaxSelect",
-      direction,
-      positions: cx.ranges.map((range) => cx.text.positionAt(from(range))),
-    });
-  };
+    cx.state.objectSelections = [];
+  }
+  syntaxMove((tree, range) => tree.shrink(range))(cx);
+}
+
+// `]f`, `[f`, and friends; select mode extends from the anchor.
+function gotoObject(name, forward) {
+  return syntaxMove((tree, range, cx) => {
+    const target = tree.goto(range, name, forward, cx.count);
+    if (cx.extend) return { anchor: range.anchor, head: target.head < range.anchor ? target.anchor : target.head };
+    return forward ? { anchor: from(target), head: to(target) } : { anchor: to(target), head: from(target) };
+  });
 }
 
 // Scrolling -----------------------------------------------------------------
@@ -939,10 +987,12 @@ export const KEYMAP = {
     },
     p: (cx) => cx.move((range) => previousParagraph(cx.text, range, cx.count, cx.extend)),
     d: NEEDS_LANGUAGE_SERVER,
-    f: NEEDS_TREE_SITTER,
-    t: NEEDS_TREE_SITTER,
-    a: NEEDS_TREE_SITTER,
-    c: NEEDS_TREE_SITTER,
+    f: gotoObject("function", false),
+    t: gotoObject("class", false),
+    a: gotoObject("parameter", false),
+    c: gotoObject("comment", false),
+    e: gotoObject("entry", false),
+    T: gotoObject("test", false),
   },
   "]": {
     Space: (cx) => {
@@ -955,10 +1005,12 @@ export const KEYMAP = {
     },
     p: (cx) => cx.move((range) => nextParagraph(cx.text, range, cx.count, cx.extend)),
     d: NEEDS_LANGUAGE_SERVER,
-    f: NEEDS_TREE_SITTER,
-    t: NEEDS_TREE_SITTER,
-    a: NEEDS_TREE_SITTER,
-    c: NEEDS_TREE_SITTER,
+    f: gotoObject("function", true),
+    t: gotoObject("class", true),
+    a: gotoObject("parameter", true),
+    c: gotoObject("comment", true),
+    e: gotoObject("entry", true),
+    T: gotoObject("test", true),
   },
   Space: {
     y: clipboardYank(false),
@@ -985,15 +1037,18 @@ export const KEYMAP = {
     h: NEEDS_LANGUAGE_SERVER,
   },
 
-  "A-o": syntaxSelect("expand"),
-  "A-Up": syntaxSelect("expand"),
-  "A-i": syntaxSelect("shrink"),
-  "A-Down": syntaxSelect("shrink"),
-  "A-p": NEEDS_TREE_SITTER,
-  "A-Left": NEEDS_TREE_SITTER,
-  "A-n": NEEDS_TREE_SITTER,
-  "A-Right": NEEDS_TREE_SITTER,
-  "A-a": NEEDS_TREE_SITTER,
+  "A-o": expandSelection,
+  "A-Up": expandSelection,
+  "A-i": shrinkSelection,
+  "A-Down": shrinkSelection,
+  "A-I": syntaxSplit((tree, range) => tree.children(range)),
+  "A-p": syntaxMove((tree, range) => tree.sibling(range, false)),
+  "A-Left": syntaxMove((tree, range) => tree.sibling(range, false)),
+  "A-n": syntaxMove((tree, range) => tree.sibling(range, true)),
+  "A-Right": syntaxMove((tree, range) => tree.sibling(range, true)),
+  "A-a": syntaxSplit((tree, range) => tree.siblings(range)),
+  "A-e": syntaxMove((tree, range, cx) => tree.parentBound(range, true, cx.extend)),
+  "A-b": syntaxMove((tree, range, cx) => tree.parentBound(range, false, cx.extend)),
   "=": NEEDS_LANGUAGE_SERVER,
   "|": NEEDS_SHELL,
   "A-|": NEEDS_SHELL,

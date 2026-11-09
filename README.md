@@ -137,8 +137,6 @@ status line shows its progress while it indexes:
 - `gd` goes to the definition, `gD` to the declaration, `gy` to the type
   definition, and `gi` to the implementation.
 - `gr` lists references.
-- `A-o` expands the selection to the enclosing syntax node and `A-i` shrinks it,
-  using rust-analyzer's selection ranges.
 
 A single result jumps directly, opening another module's source page if needed.
 Several results open a picker: type to filter, use the arrow keys or
@@ -146,9 +144,16 @@ Several results open a picker: type to filter, use the arrow keys or
 `C-i` (or `Tab`) jumps forward, across files too, restoring the selection in
 each. The browser's back button also returns to the position you jumped from.
 
+Syntax-tree commands use tree-sitter's Rust grammar in the browser, with Helix's
+text-object queries: `A-o`/`A-i` expand and shrink the selection, `A-n`/`A-p`
+select sibling nodes, `A-a` and `A-I` select all siblings or children,
+`A-e`/`A-b` move to the end or start of the parent node, `mi`/`ma` select the
+`f`unction, `t`ype, `a`rgument, `c`omment, `T`est, or `e`ntry around the
+cursor, and `]`/`[` with the same letters go to the next or previous one.
+
 Features that need a terminal or other editor services are left out: file
-pickers, splits, the other language-server commands, tree-sitter text objects,
-and shell pipes. Pressing one of those keys explains why it is unavailable.
+pickers, splits, the other language-server commands, and shell pipes. Pressing
+one of those keys explains why it is unavailable.
 
 The current analyzer intentionally follows `module-viz`: it supports Rust
 packages and explicit Cargo workspace members, but does not expand globbed

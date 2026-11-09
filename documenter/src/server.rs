@@ -283,7 +283,6 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/navigate", post(navigate))
         .route("/api/language-server", get(language_server))
         .route("/api/settings", get(get_settings).put(put_settings))
-        .route("/api/selection-ranges", post(selection_ranges))
         .route("/api/drawing", get(get_drawing).put(put_drawing))
         .route("/api/drawings", post(create_drawing))
         .route("/api/drawing-file", get(get_drawing_file))
@@ -579,30 +578,6 @@ struct NavigateRequest {
     content: String,
 }
 
-#[derive(Deserialize)]
-struct SelectionRangesRequest {
-    module: String,
-    positions: Vec<PositionBody>,
-    content: String,
-}
-
-#[derive(Deserialize, Serialize)]
-struct PositionBody {
-    line: u32,
-    character: u32,
-}
-
-#[derive(Serialize)]
-struct RangeBody {
-    start: PositionBody,
-    end: PositionBody,
-}
-
-#[derive(Serialize)]
-struct SelectionRangesResponse {
-    ranges: Vec<Vec<RangeBody>>,
-}
-
 #[derive(Serialize)]
 struct NavigateResponse {
     locations: Vec<LocationResponse>,
@@ -646,40 +621,6 @@ async fn language_server(
 ) -> ApiResult<Json<ServerStatus>> {
     state.authorize(&query.token)?;
     Ok(Json(state.rust_analyzer.status().await))
-}
-
-async fn selection_ranges(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<AuthQuery>,
-    Json(body): Json<SelectionRangesRequest>,
-) -> ApiResult<Json<SelectionRangesResponse>> {
-    state.authorize(&query.token)?;
-    let path = source_path(&state, &body.module).await?;
-    ensure_safe_existing_file(&state.root, &path)?;
-    let positions: Vec<(u32, u32)> = body
-        .positions
-        .iter()
-        .map(|position| (position.line, position.character))
-        .collect();
-    let chains = state
-        .rust_analyzer
-        .selection_ranges(&path, &body.content, &positions)
-        .await
-        .map_err(navigation_error)?;
-    let position = |(line, character)| PositionBody { line, character };
-    let ranges = chains
-        .into_iter()
-        .map(|chain| {
-            chain
-                .into_iter()
-                .map(|(start, end)| RangeBody {
-                    start: position(start),
-                    end: position(end),
-                })
-                .collect()
-        })
-        .collect();
-    Ok(Json(SelectionRangesResponse { ranges }))
 }
 
 fn navigation_error(error: NavigationError) -> ApiError {
@@ -1112,7 +1053,7 @@ fn security_headers(headers: &mut HeaderMap) {
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; worker-src 'self' blob:",
+            "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:",
         ),
     );
     headers.insert(
@@ -1491,29 +1432,6 @@ mod tests {
         };
         assert_eq!(status.0, StatusCode::OK);
         assert_eq!(status.1["state"], "ready", "{}", status.1);
-
-        let ranges = json_request(
-            &app,
-            "POST",
-            "/api/selection-ranges?token=test-token",
-            serde_json::json!({
-                "module": "sample",
-                "positions": [{ "line": 2, "character": 13 }],
-                "content": lib,
-            }),
-        )
-        .await;
-        assert_eq!(ranges.0, StatusCode::OK, "{}", ranges.1);
-        let chain = ranges.1["ranges"][0].as_array().unwrap();
-        // Innermost first: an empty range at the position, then `Engine`.
-        assert_eq!(
-            chain[1],
-            serde_json::json!({
-                "start": { "line": 2, "character": 12 },
-                "end": { "line": 2, "character": 18 },
-            })
-        );
-        assert!(chain.len() > 2, "{}", ranges.1);
     }
 
     #[tokio::test]

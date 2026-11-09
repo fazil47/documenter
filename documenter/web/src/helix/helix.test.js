@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { createRequire } from "node:module";
+import { beforeAll, describe, expect, it } from "vitest";
 
-import { keyFromEvent } from "./index.js";
+import { keyFromEvent, loadRustSyntax } from "./index.js";
 import { Engine } from "./state.js";
 import { Text } from "./text.js";
 
@@ -47,7 +48,7 @@ function applyEdits(value, edits) {
 }
 
 // Mirrors the adapter: applies results, keeps undo history, and replays keys.
-function editor(marked, { clipboard = "" } = {}) {
+function editor(marked, { clipboard = "", syntax } = {}) {
   const { value, ranges } = parse(marked);
   const text = new Text(value);
   const doc = {
@@ -67,7 +68,7 @@ function editor(marked, { clipboard = "" } = {}) {
     }
     if (result.selections) doc.selections = result.selections;
   };
-  const snapshot = () => ({ text: doc.value, selections: doc.selections, fileName: "src/lib.rs", pageLines: 4, visibleLines: { first: 0, last: 100 } });
+  const snapshot = () => ({ text: doc.value, selections: doc.selections, fileName: "src/lib.rs", pageLines: 4, visibleLines: { first: 0, last: 100 }, syntax });
   const press = (key, replaying = false) => {
     const result = helix.handleKey(key, snapshot(), { replaying });
     doc.last = result;
@@ -431,38 +432,61 @@ describe("jumps", () => {
   });
 });
 
-describe("syntax selection", () => {
-  const range = (start, end) => ({ start: { line: 0, character: start }, end: { line: 0, character: end } });
-  // rust-analyzer's chain at `engine::Engine`: empty, `Engine`, the path, the line.
-  const chain = [range(8, 8), range(8, 14), range(0, 14), range(0, 15)];
-  const answer = (session, direction) => {
-    const { command } = session.doc.last;
-    expect(command).toMatchObject({ type: "syntaxSelect", direction });
-    session.doc.selections = session.helix.selectSyntax(direction, [chain], { text: session.doc.value, selections: session.doc.selections }).selections;
-    return session.state;
-  };
-
-  it("expands to the smallest larger range and shrinks to the largest smaller one", () => {
-    const session = editor("engine::⟨E⟩ngine;");
-    expect(answer(session.keys("<A-o>"), "expand")).toBe("engine::⟨Engine⟩;");
-    expect(answer(session.keys("<A-o>"), "expand")).toBe("⟨engine::Engine⟩;");
-    expect(session.keys("<A-i>").state).toBe("engine::⟨Engine⟩;");
-    expect(session.keys("<A-i>").state).toBe("engine::⟨E⟩ngine;");
+describe("syntax tree", () => {
+  let syntax;
+  beforeAll(async () => {
+    const require = createRequire(import.meta.url);
+    syntax = await loadRustSyntax({
+      runtime: require.resolve("web-tree-sitter/web-tree-sitter.wasm"),
+      grammar: require.resolve("tree-sitter-rust/tree-sitter-rust.wasm"),
+    });
   });
+  const rust = (marked) => editor(marked, { syntax });
 
-  it("ignores an answer for selections that moved while it was in flight", () => {
-    const session = editor("engine::⟨E⟩ngine;").keys("<A-o>l");
-    const result = session.helix.selectSyntax("expand", [chain], { text: session.doc.value, selections: session.doc.selections });
-    expect(result.selections).toBeUndefined();
-    expect(session.state).toBe("engine::E⟨n⟩gine;");
+  it("expands to enclosing nodes and shrinks back through the expansions", () => {
+    const session = rust("use engine::⟨E⟩ngine;\n");
+    expect(session.keys("<A-o>").state).toBe("use engine::⟨Engine⟩;\n");
+    expect(session.keys("<A-o>").state).toBe("use ⟨engine::Engine⟩;\n");
+    expect(session.keys("<A-i>").state).toBe("use engine::⟨Engine⟩;\n");
+    expect(session.keys("<A-i>").state).toBe("use engine::⟨E⟩ngine;\n");
   });
 
   it("shrinks to the first child when there is no expansion to retrace", () => {
-    const session = editor("⟨engine::Engine⟩;").keys("<A-i>");
-    const { command } = session.doc.last;
-    expect(command).toMatchObject({ type: "syntaxSelect", direction: "shrink", positions: [{ line: 0, character: 0 }] });
-    const start = [range(0, 0), range(0, 6), range(0, 14), range(0, 15)];
-    session.doc.selections = session.helix.selectSyntax("shrink", [start], { text: session.doc.value, selections: session.doc.selections }).selections;
-    expect(session.state).toBe("⟨engine⟩::Engine;");
+    expect(rust("use ⟨engine::Engine⟩;\n").keys("<A-i>").state).toBe("use ⟨engine⟩::Engine;\n");
+    // Moving away drops the expansion history instead of jumping back to it.
+    expect(rust("use engine::⟨E⟩ngine;\n").keys("<A-o>l<A-i>").state).toBe("use engine::Engine⟨;⟩\n");
+  });
+
+  it("selects siblings, all siblings, and all children", () => {
+    expect(rust("fn f() { ⟨a();⟩ b(); }\n").keys("<A-n>").state).toBe("fn f() { a(); ⟨b();⟩ }\n");
+    expect(rust("fn f() { a(); ⟨b();⟩ }\n").keys("<A-p>").state).toBe("fn f() { ⟨a();⟩ b(); }\n");
+    expect(rust("fn f() { g(⟨x⟩, y); }\n").keys("<A-a>").state).toBe("fn f() { g(⟨x⟩, ⟨y⟩); }\n");
+    expect(rust("fn f() { g⟨(x, y)⟩; }\n").keys("<A-I>").state).toBe("fn f() { g(⟨x⟩, ⟨y⟩); }\n");
+  });
+
+  it("moves to the ends of parent nodes", () => {
+    const session = rust("fn f() { g(⟨x⟩, y); }\n");
+    expect(session.keys("<A-e>").state).toBe("fn f() { g(x⟨,⟩ y); }\n");
+    expect(session.keys("<A-e>").state).toBe("fn f() { g(x, y)⟨;⟩ }\n");
+    expect(rust("fn f() { g(x, ⟨y⟩); }\n").keys("<A-b>").state).toBe("fn f() { g⟨(⟩x, y); }\n");
+  });
+
+  it("selects tree-sitter text objects", () => {
+    expect(rust("fn f() { ⟨a⟩(); }\n").keys("mif").state).toBe("fn f() ⟨{ a(); }⟩\n");
+    expect(rust("fn f() { ⟨a⟩(); }\n").keys("maf").state).toBe("⟨fn f() { a(); }⟩\n");
+    expect(rust("fn f(a: u8, ⟨b⟩: u16) {}\n").keys("mia").state).toBe("fn f(a: u8, ⟨b: u16⟩) {}\n");
+    expect(rust("fn f(⟨a⟩: u8, b: u16) {}\n").keys("maa").state).toBe("fn f(⟨a: u8,⟩ b: u16) {}\n");
+  });
+
+  it("goes to the next and previous function", () => {
+    expect(rust("⟨/⟩/ x\nfn f() {}\nfn g() {}\n").keys("]f").state).toBe(`// x\n⟨fn f() {}⟩\nfn g() {}\n`);
+    expect(rust("⟨/⟩/ x\nfn f() {}\nfn g() {}\n").keys("2]f").state).toBe(`// x\nfn f() {}\n⟨fn g() {}⟩\n`);
+    // Like Helix, `[f` skips the function the cursor is in.
+    expect(rust("// x\nfn f() {}\nfn g() {⟨}⟩\n").keys("[f").state).toBe(`// x\n⟨fn f() {}⟩\nfn g() {}\n`);
+  });
+
+  it("reports when the grammar has not loaded yet", () => {
+    const session = editor("⟨a⟩\n").keys("<A-o>");
+    expect(session.doc.last.message).toEqual({ text: "the syntax tree is still loading", error: true });
   });
 });
