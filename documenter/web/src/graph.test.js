@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { graphElements } from "./graph.js";
+import { focusPositions, graphElements } from "./graph.js";
 
 describe("graphElements", () => {
   it("contracts folded modules into their nearest visible parents", () => {
@@ -118,3 +118,28 @@ function module(id, folded) {
 function edge(source, target) {
   return { source, target };
 }
+
+describe("focusPositions", () => {
+  const size = { width: 100, height: 40 };
+  const sizes = Object.fromEntries(["rust", "analysis", "cfg", "cargo", "settings"].map((id) => [id, size]));
+
+  it("points every edge right except the ones closing a cycle", () => {
+    const edges = [
+      ["rust", "analysis"], ["rust", "cfg"], ["rust", "cargo"],
+      ["analysis", "rust"], ["analysis", "cargo"], ["analysis", "settings"],
+      ["cargo", "cfg"],
+    ];
+    const { positions, cycles, routes } = focusPositions("rust", edges, sizes);
+    const columns = [...new Set(Object.values(positions).map((point) => point.x))].sort((a, b) => a - b);
+    const column = (id) => columns.indexOf(positions[id].x);
+    expect(["rust", "analysis", "cargo", "settings", "cfg"].map(column)).toEqual([0, 1, 2, 2, 3]);
+    expect([...cycles]).toEqual(["analysis -> rust"]);
+    for (const [source, target] of edges) {
+      if (!cycles.has(`${source} -> ${target}`)) expect(positions[target].x).toBeGreaterThan(positions[source].x);
+    }
+    // Long edges pass through slots in the columns they cross, between the nodes there.
+    expect([...routes.keys()]).toEqual(["rust -> cfg", "rust -> cargo"]);
+    expect(routes.get("rust -> cfg").map((point) => point.x)).toEqual([positions.analysis.x, positions.cargo.x]);
+    expect(Object.keys(positions)).toHaveLength(5);
+  });
+});

@@ -3,7 +3,7 @@ import cytoscape from "cytoscape";
 import elk from "cytoscape-elk";
 
 import { routes } from "./api.js";
-import { graphElements } from "./graph.js";
+import { focusPositions, graphElements } from "./graph.js";
 
 cytoscape.use(elk);
 
@@ -33,40 +33,70 @@ function positions(nodes) {
   return Object.fromEntries(nodes.filter((node) => !node.isParent()).map((node) => [node.id(), { ...node.position() }]));
 }
 
-// Stops running animations and marks any layout still running as outdated.
+// Stops running node and view animations, so a new layout starts from rest.
 function interrupt(graph) {
   graph.stop(true);
   graph.nodes().stop(true);
-  const run = {};
-  graph.scratch("run", run);
-  return run;
 }
 
-// Lays `elements` out from the left and animates the nodes and the view there
-// together: the layout runs first, then everything moves back and animates.
-function focusLayout(graph, elements) {
-  const run = interrupt(graph);
-  const start = positions(graph.nodes());
-  const layout = elements.layout({ ...layoutOptions, fit: false, animate: false });
-  layout.one("layoutstop", () => {
-    // ELK finishes asynchronously; a newer focus or reset may have replaced this one.
-    if (graph.destroyed() || graph.scratch("run") !== run) return;
-    const end = positions(elements.nodes());
-    const box = elements.boundingBox();
-    graph.batch(() => {
-      for (const [id, position] of Object.entries(start)) graph.getElementById(id).position(position);
-    });
-    const width = graph.width();
-    const height = graph.height();
-    const fit = Math.min(1.25, (width - 2 * PADDING) / box.w, (height - 2 * PADDING) / box.h);
-    const zoom = Math.max(graph.minZoom(), fit);
-    elements.nodes().not(":parent").layout({ name: "preset", positions: (node) => end[node.id()], fit: false, ...animation }).run();
-    graph.animate(
-      { zoom, pan: { x: PADDING - box.x1 * zoom, y: (height - box.h * zoom) / 2 - box.y1 * zoom } },
-      { duration: animation.animationDuration, easing: animation.animationEasing },
-    );
+// A line from `source` to `target` through `points`, with rounded corners, as
+// Cytoscape segments: a weight along the source-target line and a distance from it.
+function curveThrough(source, target, points) {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return {
+    "curve-style": "round-segments",
+    // Weights are along the line between node centers, as computed here.
+    "edge-distances": "node-position",
+    "segment-radius": 40,
+    "segment-weights": points.map((point) => ((point.x - source.x) * dx + (point.y - source.y) * dy) / length ** 2),
+    "segment-distances": points.map((point) => ((point.y - source.y) * dx - (point.x - source.x) * dy) / length),
+  };
+}
+
+// Lays out `node` and its dependencies in columns from the left, then animates
+// the nodes and the view there together.
+function focusLayout(graph, node, kept) {
+  interrupt(graph);
+  const nodes = kept.nodes().not(":parent");
+  const sizes = Object.fromEntries(nodes.map((each) => [each.id(), { width: each.outerWidth(), height: each.outerHeight() }]));
+  const edges = kept.edges();
+  const { positions: end, cycles, routes } = focusPositions(
+    node.id(),
+    edges.map((edge) => [edge.source().id(), edge.target().id()]),
+    sizes,
+  );
+  graph.batch(() => {
+    edges.addClass("direct");
+    edges.filter((edge) => cycles.has(`${edge.source().id()} -> ${edge.target().id()}`)).addClass("cycle");
+    for (const edge of edges) {
+      const route = routes.get(`${edge.source().id()} -> ${edge.target().id()}`);
+      if (route) edge.addClass("routed").style(curveThrough(end[edge.source().id()], end[edge.target().id()], route));
+    }
   });
-  layout.run();
+  const box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+  for (const [id, { x, y }] of Object.entries(end)) {
+    box.x1 = Math.min(box.x1, x - sizes[id].width / 2);
+    box.x2 = Math.max(box.x2, x + sizes[id].width / 2);
+    box.y1 = Math.min(box.y1, y - sizes[id].height / 2);
+    box.y2 = Math.max(box.y2, y + sizes[id].height / 2);
+  }
+  const width = graph.width();
+  const height = graph.height();
+  const fit = Math.min(1, (width - 2 * PADDING) / (box.x2 - box.x1), (height - 2 * PADDING) / (box.y2 - box.y1));
+  const zoom = Math.max(graph.minZoom(), fit);
+  nodes.layout({ name: "preset", positions: (each) => end[each.id()], fit: false, ...animation }).run();
+  graph.animate(
+    { zoom, pan: { x: PADDING - box.x1 * zoom, y: (height - (box.y2 - box.y1) * zoom) / 2 - box.y1 * zoom } },
+    { duration: animation.animationDuration, easing: animation.animationEasing },
+  );
+}
+
+// Undoes what focusing changed on the graph's elements.
+function clearFocus(graph) {
+  graph.edges(".routed").removeStyle();
+  graph.elements().removeClass("hidden focus quiet direct cycle routed");
 }
 
 // The focused module's node grows to this size, and an HTML card is drawn over it.
@@ -145,6 +175,19 @@ function graphStyle() {
     {
       selector: ".hidden",
       style: { display: "none" },
+    },
+    // Focus mode: crates are not boxed, and each edge is its own curve.
+    {
+      selector: "node[crateGroup].quiet",
+      style: { "background-opacity": 0, "border-width": 0, "text-opacity": 0 },
+    },
+    {
+      selector: "edge.direct",
+      style: { "curve-style": "bezier", opacity: 0.85 },
+    },
+    {
+      selector: "edge.cycle",
+      style: { "line-style": "dashed", "line-dash-pattern": [6, 4] },
     },
     {
       selector: "node.focus",
@@ -252,7 +295,7 @@ export default function GraphPage({ workspace }) {
     if (node.empty()) {
       if (!home.current) return;
       interrupt(graph);
-      graph.elements().removeClass("hidden focus");
+      clearFocus(graph);
       const saved = home.current;
       home.current = null;
       graph.nodes().not(":parent").layout({ name: "preset", positions: (each) => saved[each.id()], fit: true, padding: PADDING, ...animation }).run();
@@ -261,11 +304,13 @@ export default function GraphPage({ workspace }) {
     home.current ??= positions(graph.nodes());
     const kept = node.union(node.successors());
     graph.batch(() => {
-      graph.elements().removeClass("focus").addClass("hidden");
+      clearFocus(graph);
+      graph.elements().addClass("hidden");
       kept.union(kept.nodes().ancestors()).removeClass("hidden");
+      kept.nodes().ancestors().addClass("quiet");
       node.addClass("focus");
     });
-    focusLayout(graph, graph.elements().not(".hidden"));
+    focusLayout(graph, node, kept);
   }, [focus, readyGraph]);
 
   function search(event) {
@@ -285,7 +330,7 @@ export default function GraphPage({ workspace }) {
     home.current = null;
     if (!graph) return;
     interrupt(graph);
-    graph.elements().removeClass("hidden focus");
+    clearFocus(graph);
     graph.layout({ ...layoutOptions, ...animation }).run();
   }
 
