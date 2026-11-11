@@ -23,7 +23,7 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::time::{Instant, sleep};
 use tower::ServiceExt;
 
-use super::rust_analyzer::RustAnalyzer;
+use super::language_server::LanguageServers;
 use super::settings::Store as SettingsStore;
 use super::storage::{ReplaceError, Storage, atomic_write};
 use super::watch::{Change, debounce};
@@ -429,7 +429,7 @@ async fn simulate(seed: u64) -> Result<Vec<String>, String> {
         revisions,
         documents: RwLock::new(HashMap::new()),
         scheduled_refresh: Mutex::new(None),
-        rust_analyzer: RustAnalyzer::new(root.clone()),
+        language_servers: LanguageServers::new(root.clone()),
         settings: SettingsStore::at(None),
         notes,
         storage: Storage::simulated(disk.clone()),

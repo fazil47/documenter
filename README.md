@@ -123,8 +123,8 @@ leading comment is its documentation and its exports are its items. Tests in
 `*.test.*` and `*.spec.*` files belong to the module they are named after, or to
 their folder's. Each crate and package is its own box in the graph, labelled
 with its language; a dependency between them would be drawn module to module,
-across the boxes. Source pages edit JavaScript too, without rust-analyzer's
-navigation or Helix's syntax-aware commands.
+across the boxes. Source pages edit JavaScript and TypeScript too, with the
+same Helix navigation and syntax-aware commands as Rust.
 
 Clicking a module in the graph focuses it: only the module and everything it
 depends on stay, laid out from the left, and the module shows the start of its
@@ -173,9 +173,12 @@ modes, counts, registers, macros, `.` repeat, search, multiple selections, match
 mode (`m`), `gw` jump labels, and a `:` command line (`:w`, `:q`, `:wq`,
 `:reload`, `:sort`, and more).
 
-Helix's language-server goto keys use rust-analyzer when it is on `PATH`. Like
-Helix, documenter starts it when a source page opens in Helix mode, and the
-status line shows its progress while it indexes:
+Helix's language-server goto keys use rust-analyzer in Rust files and
+TypeScript 7's built-in server (`tsc --lsp`) in JavaScript and TypeScript
+files, when they are on `PATH` (`rustup component add rust-analyzer`,
+`npm install --global typescript@7`). Like Helix, documenter starts a file's
+server when its source page opens in Helix mode, and the status line shows its
+progress while it indexes:
 - `gd` goes to the definition, `gD` to the declaration, `gy` to the type
   definition, and `gi` to the implementation.
 - `gr` lists references.
@@ -186,12 +189,13 @@ Several results open a picker: type to filter, use the arrow keys or
 `C-i` (or `Tab`) jumps forward, across files too, restoring the selection in
 each. The browser's back button also returns to the position you jumped from.
 
-Syntax-tree commands use tree-sitter's Rust grammar in the browser, with Helix's
-text-object queries: `A-o`/`A-i` expand and shrink the selection, `A-n`/`A-p`
-select sibling nodes, `A-a` and `A-I` select all siblings or children,
-`A-e`/`A-b` move to the end or start of the parent node, `mi`/`ma` select the
-`f`unction, `t`ype, `a`rgument, `c`omment, `T`est, or `e`ntry around the
-cursor, and `]`/`[` with the same letters go to the next or previous one.
+Syntax-tree commands use tree-sitter's Rust, JavaScript, TypeScript, and TSX
+grammars in the browser, with Helix's text-object queries: `A-o`/`A-i` expand
+and shrink the selection, `A-n`/`A-p` select sibling nodes, `A-a` and `A-I`
+select all siblings or children, `A-e`/`A-b` move to the end or start of the
+parent node, `mi`/`ma` select the `f`unction, `t`ype, `a`rgument, `c`omment,
+`T`est, or `e`ntry around the cursor, and `]`/`[` with the same letters go to
+the next or previous one.
 
 Features that need a terminal or other editor services are left out: file
 pickers, splits, the other language-server commands, and shell pipes. Pressing

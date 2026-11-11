@@ -1,16 +1,16 @@
-// Rust syntax trees for Helix's tree-sitter commands, ported from helix-core's
+// Syntax trees for Helix's tree-sitter commands, ported from helix-core's
 // object.rs, movement.rs, and textobject.rs. Tree-sitter reports UTF-16
 // offsets for JavaScript strings, the same offsets the engine uses.
 
 import { Language, Parser, Query } from "web-tree-sitter";
 
-import textObjects from "./rust_textobjects.scm?raw";
 import { cursor, from, isForward, to } from "./selection.js";
 
-// `runtime` and `grammar` locate web-tree-sitter's and the Rust grammar's WASM
-// files. Resolves to `syntax(text)`, which parses only when the text changes.
-export async function loadRustSyntax({ runtime, grammar }) {
-  await Parser.init({ locateFile: () => runtime });
+// `runtime` and `grammar` locate web-tree-sitter's and a grammar's WASM files;
+// `textObjects` is the grammar's Helix text object query. Resolves to
+// `syntax(text)`, which parses only when the text changes.
+export async function loadSyntax({ runtime, grammar, textObjects }) {
+  await initRuntime(runtime);
   const language = await Language.load(grammar);
   const parser = new Parser();
   parser.setLanguage(language);
@@ -24,6 +24,19 @@ export async function loadRustSyntax({ runtime, grammar }) {
     }
     return last.syntax;
   };
+}
+
+// web-tree-sitter's runtime, set up once for every grammar: concurrent
+// `Parser.init` calls would each make a WASM module and the second would
+// replace the first under the grammars made with it.
+let runtimeReady;
+
+function initRuntime(runtime) {
+  runtimeReady ??= Parser.init({ locateFile: () => runtime }).catch((error) => {
+    runtimeReady = undefined;
+    throw error;
+  });
+  return runtimeReady;
 }
 
 const directed = (start, end, forward) => (forward ? { anchor: start, head: end } : { anchor: end, head: start });

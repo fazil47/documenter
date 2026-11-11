@@ -71,10 +71,11 @@ export class Context {
     this.commandRequest = command;
   }
 
-  // The text's syntax tree, or undefined (with a message) while it loads.
+  // The text's syntax tree, or undefined (with a message) while it loads or for
+  // a file without a grammar.
   tree() {
     const tree = this.state.syntax?.(this.text.value);
-    if (!tree) this.message("the syntax tree is still loading", true);
+    if (!tree) this.message(this.state.syntax === null ? "no syntax tree for this file" : "the syntax tree is still loading", true);
     return tree;
   }
 
@@ -571,7 +572,7 @@ function splitOnNewlines(cx) {
 
 // Match mode ---------------------------------------------------------------
 
-// Text objects found by the tree-sitter query in rust_textobjects.scm.
+// Text objects found by the grammar's tree-sitter query, such as rust_textobjects.scm.
 const SYNTAX_OBJECTS = { f: "function", t: "class", a: "parameter", c: "comment", T: "test", e: "entry", x: "xml-element" };
 
 function selectTextObject(around) {
@@ -681,7 +682,7 @@ export function clipboardYank(primaryOnly) {
 
 export const clipboardPaste = (mode) => (cx) => cx.command({ type: "pasteClipboard", mode, count: cx.count });
 
-// Language server navigation, answered by rust-analyzer through the page.
+// Language server navigation, answered by the file's language server through the page.
 function navigate(kind) {
   return (cx) => {
     const position = cx.text.positionAt(cursor(cx.ranges[cx.primary]));

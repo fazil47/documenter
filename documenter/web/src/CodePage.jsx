@@ -78,38 +78,40 @@ function Spinner() {
   return SPINNER[frame];
 }
 
-// rust-analyzer's state, as Helix shows its language server's progress.
+// The file's language server's state, as Helix shows its progress.
 function LanguageServerStatus({ server }) {
   if (!server) return null;
+  const name = server.server;
   if (server.state === "indexing") {
     return (
       <span className="helix-language-server busy">
-        <Spinner /> rust-analyzer{server.progress ? `: ${server.progress}` : ""}
+        <Spinner /> {name}{server.progress ? `: ${server.progress}` : ""}
       </span>
     );
   }
-  if (server.state === "missing") return <span className="helix-language-server error">rust-analyzer not installed</span>;
-  if (server.state === "failed") return <span className="helix-language-server error" title={server.message}>rust-analyzer failed</span>;
-  return <span className="helix-language-server">rust-analyzer</span>;
+  if (server.state === "missing") return <span className="helix-language-server error">{name} not installed</span>;
+  if (server.state === "failed") return <span className="helix-language-server error" title={server.message}>{name} failed</span>;
+  return <span className="helix-language-server">{name}</span>;
 }
 
-// Polls the server, which starts rust-analyzer the first time, as Helix does on
-// opening a file. Mounted with the Helix status line, so it polls only in Helix mode,
-// and only for Rust files. Polling stops on a missing or failed server and resumes
-// after the next lookup, which restarts rust-analyzer.
-function useLanguageServer(lookups, enabled) {
+// Polls the server, which starts the file's language server the first time, as
+// Helix does on opening a file. Mounted with the Helix status line, so it polls
+// only in Helix mode. Polling stops for a file no server handles, or on a missing
+// or failed server, and resumes after the next lookup, which restarts it.
+function useLanguageServer(moduleId, lookups) {
   const [server, setServer] = useState(undefined);
   useEffect(() => {
-    if (!enabled) return undefined;
+    // Not the previous file's server while the first poll is in flight.
+    setServer(undefined);
     let stopped = false;
     let timer;
     const poll = async () => {
       let delay = 1000;
       try {
-        const status = await api("/api/language-server");
+        const status = await api("/api/language-server", {}, { module: moduleId });
         if (stopped) return;
         setServer(status);
-        if (status.state === "missing" || status.state === "failed") return;
+        if (!status || status.state === "missing" || status.state === "failed") return;
       } catch {
         if (stopped) return;
         delay = 5000;
@@ -121,16 +123,13 @@ function useLanguageServer(lookups, enabled) {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [lookups, enabled]);
+  }, [moduleId, lookups]);
   return server;
 }
 
-// rust-analyzer and the tree-sitter grammar cover Rust files only.
-const isRust = (path) => Boolean(path?.endsWith(".rs"));
-
-function HelixStatus({ status, lookups, languageServer }) {
+function HelixStatus({ status, moduleId, lookups }) {
   const { mode, pending, prompt, message, recording } = status;
-  const server = useLanguageServer(lookups, languageServer);
+  const server = useLanguageServer(moduleId, lookups);
   return (
     <footer className={`helix-status helix-${mode}`}>
       <span className="helix-mode">{MODE_LABELS[mode]}</span>
@@ -140,7 +139,7 @@ function HelixStatus({ status, lookups, languageServer }) {
         <span className={`helix-message ${message?.error ? "error" : ""}`}>{message?.text}</span>
       )}
       {recording && <span className="helix-recording">[recording {recording}]</span>}
-      {languageServer && <LanguageServerStatus server={server} />}
+      <LanguageServerStatus server={server} />
       <span className="helix-pending">{pending}</span>
     </footer>
   );
@@ -367,7 +366,6 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     } else if (command.type === "reload") {
       load();
     } else if (command.type === "navigate") {
-      if (!isRust(source?.path)) return "no language server for this file; goto works in Rust files";
       navigate(command);
     } else if (command.type === "jumpFile") {
       const state = window.history.state ?? {};
@@ -377,7 +375,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       window.history.go(command.direction);
     }
     return undefined;
-  }, [dirty, save, load, moduleId, navigate, source]);
+  }, [dirty, save, load, moduleId, navigate]);
 
   const [helixStatus, actions] = useHelix({
     editor,
@@ -475,7 +473,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
           </div>
         )}
       </div>
-      {helixEnabled && <HelixStatus status={helixStatus} lookups={lookups} languageServer={isRust(source?.path)} />}
+      {helixEnabled && <HelixStatus status={helixStatus} moduleId={moduleId} lookups={lookups} />}
       {picker && (
         <LocationPicker
           title={picker.title}

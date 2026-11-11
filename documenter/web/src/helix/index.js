@@ -3,7 +3,7 @@
 import { Engine } from "./state.js";
 
 export { keyFromEvent } from "./keys.js";
-export { loadRustSyntax } from "./syntax.js";
+export { loadSyntax } from "./syntax.js";
 
 // The engine's public face: keys and clipboard text in, edits and selections out.
 export class HelixState {
@@ -14,7 +14,7 @@ export class HelixState {
   }
 
   // `snapshot` is `{ text, selections, fileName, pageLines, visibleLines, syntax }`
-  // with Pierre selections and `syntax` from `loadRustSyntax`. Results list the
+  // with Pierre selections and `syntax` from `loadSyntax`. Results list the
   // primary selection last, as Pierre does.
   handleKey(key, snapshot, options) {
     return this.#engine.handleKey(key, snapshot, options);

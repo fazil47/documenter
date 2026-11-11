@@ -1,6 +1,6 @@
 //! Local documentation server and repository write boundary.
 
-mod rust_analyzer;
+mod language_server;
 mod settings;
 #[cfg(test)]
 mod simulation;
@@ -31,7 +31,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
-use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer, ServerStatus};
+use self::language_server::{LanguageServers, NavigationError, NavigationKind, ServerStatus};
 use self::settings::{Settings, Store as SettingsStore};
 use self::storage::{ReplaceError, Storage, atomic_write};
 use self::watch::{Change, WorkspaceWatcher};
@@ -69,7 +69,7 @@ struct AppState {
     revisions: broadcast::Sender<u64>,
     documents: RwLock<HashMap<PathBuf, String>>,
     scheduled_refresh: StdMutex<Option<JoinHandle<()>>>,
-    rust_analyzer: RustAnalyzer,
+    language_servers: LanguageServers,
     settings: SettingsStore,
     notes: Notes,
     storage: Storage,
@@ -109,7 +109,7 @@ impl DocumentationServer {
             revisions,
             documents: RwLock::new(normalize_documents(&root, documents)),
             scheduled_refresh: StdMutex::new(None),
-            rust_analyzer: RustAnalyzer::new(root.clone()),
+            language_servers: LanguageServers::new(root.clone()),
             settings: SettingsStore::for_user(),
             notes,
             storage: Storage::disk(),
@@ -598,26 +598,23 @@ async fn put_settings(
     Ok(Json(body))
 }
 
+/// The status of the language server for a module's file; null if none handles it.
 async fn language_server(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<AuthQuery>,
-) -> ApiResult<Json<ServerStatus>> {
+    Query(query): Query<ModuleQuery>,
+) -> ApiResult<Json<Option<ServerStatus>>> {
     state.authorize(&query.token)?;
-    Ok(Json(state.rust_analyzer.status().await))
+    let path = source_path(&state, &query.module).await?;
+    Ok(Json(state.language_servers.status(&path).await))
 }
 
 fn navigation_error(error: NavigationError) -> ApiError {
-    match error {
-        NavigationError::NotInstalled => ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "rust-analyzer is not installed; install it with `rustup component add rust-analyzer`",
-        ),
-        NavigationError::Indexing => ApiError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "rust-analyzer is still indexing; try again in a moment",
-        ),
-        NavigationError::Failed(message) => ApiError::new(StatusCode::BAD_GATEWAY, message),
-    }
+    let status = match error {
+        NavigationError::Unsupported => StatusCode::BAD_REQUEST,
+        NavigationError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        NavigationError::Failed(_) => StatusCode::BAD_GATEWAY,
+    };
+    ApiError::new(status, error.to_string())
 }
 
 async fn navigate(
@@ -628,14 +625,8 @@ async fn navigate(
     state.authorize(&query.token)?;
     let path = source_path(&state, &body.module).await?;
     ensure_safe_existing_file(&state.root, &path)?;
-    if path.extension().is_none_or(|extension| extension != "rs") {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "navigation works in Rust files, through rust-analyzer",
-        ));
-    }
     let locations = state
-        .rust_analyzer
+        .language_servers
         .navigate(body.kind, &path, &body.content, (body.line, body.character))
         .await
         .map_err(navigation_error)?;
@@ -1204,43 +1195,14 @@ mod tests {
 
     #[tokio::test]
     async fn navigates_to_definitions_in_other_modules_with_rust_analyzer() {
-        if std::process::Command::new("rust-analyzer")
-            .arg("--version")
-            .output()
-            .map_or(true, |output| !output.status.success())
-        {
-            eprintln!("skipping: rust-analyzer is not installed");
+        if !installed("rust-analyzer", "rust-analyzer") {
             return;
         }
         let project = sample_project();
         let lib = "mod engine;\npub fn start() -> engine::Engine {\n    engine::Engine\n}\n";
         fs::write(project.path().join("src/lib.rs"), lib).unwrap();
         let app = test_router(project.path());
-        let deadline = std::time::Instant::now() + Duration::from_secs(90);
-        let response = loop {
-            let response = json_request(
-                &app,
-                "POST",
-                "/api/navigate?token=test-token",
-                serde_json::json!({
-                    "module": "sample",
-                    "kind": "definition",
-                    "line": 2,
-                    "character": 13,
-                    "content": lib,
-                }),
-            )
-            .await;
-            let indexing = response.0 == StatusCode::SERVICE_UNAVAILABLE
-                && response.1["error"]
-                    .as_str()
-                    .is_some_and(|error| error.contains("indexing"));
-            if indexing && std::time::Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                continue;
-            }
-            break response;
-        };
+        let response = navigate_when_ready(&app, "sample", lib, (2, 13)).await;
         assert_eq!(response.0, StatusCode::OK, "{}", response.1);
         let location = &response.1["locations"][0];
         assert_eq!(location["path"], "src/engine.rs");
@@ -1248,22 +1210,112 @@ mod tests {
         assert_eq!(location["line"], 0);
         assert_eq!(location["preview"], "pub struct Engine;");
 
-        let status = loop {
-            let status = json_request(
-                &app,
+        let status = status_when_ready(&app, "sample").await;
+        assert_eq!(status["server"], "rust-analyzer");
+        assert_eq!(status["state"], "ready", "{status}");
+    }
+
+    #[tokio::test]
+    async fn navigates_javascript_with_typescript() {
+        if !installed("tsc", "Version 7") {
+            return;
+        }
+        let project = sample_project();
+        fs::create_dir_all(project.path().join("web/src")).unwrap();
+        fs::write(
+            project.path().join("web/package.json"),
+            r#"{ "name": "web" }"#,
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("web/src/engine.js"),
+            "export class Engine {}\n",
+        )
+        .unwrap();
+        let main =
+            "import { Engine } from \"./engine.js\";\n\nexport const engine = new Engine();\n";
+        fs::write(project.path().join("web/src/main.js"), main).unwrap();
+        let app = test_router(project.path());
+        let response = navigate_when_ready(&app, "web::main", main, (2, 27)).await;
+        assert_eq!(response.0, StatusCode::OK, "{}", response.1);
+        let location = &response.1["locations"][0];
+        assert_eq!(location["path"], "web/src/engine.js");
+        assert_eq!(location["module"], "web::engine");
+        assert_eq!(location["preview"], "export class Engine {}");
+
+        let status = status_when_ready(&app, "web::main").await;
+        assert_eq!(status["server"], "TypeScript");
+        assert_eq!(status["state"], "ready", "{status}");
+        let rust = status_when_ready(&app, "sample::engine").await;
+        assert_eq!(rust["server"], "rust-analyzer");
+    }
+
+    // Whether `program --version` succeeds and starts with `version`.
+    fn installed(program: &str, version: &str) -> bool {
+        let found = std::process::Command::new(program)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| {
+                output.status.success() && output.stdout.starts_with(version.as_bytes())
+            });
+        if !found {
+            eprintln!("skipping: {program} ({version}) is not installed");
+        }
+        found
+    }
+
+    const LANGUAGE_SERVER_DEADLINE: Duration = Duration::from_secs(90);
+
+    // Goes to the definition at `position` in `module`, retrying while the
+    // language server is still indexing.
+    async fn navigate_when_ready(
+        app: &Router,
+        module: &str,
+        content: &str,
+        (line, character): (u32, u32),
+    ) -> (StatusCode, serde_json::Value) {
+        let deadline = std::time::Instant::now() + LANGUAGE_SERVER_DEADLINE;
+        loop {
+            let response = json_request(
+                app,
+                "POST",
+                "/api/navigate?token=test-token",
+                serde_json::json!({
+                    "module": module,
+                    "kind": "definition",
+                    "line": line,
+                    "character": character,
+                    "content": content,
+                }),
+            )
+            .await;
+            let indexing = response.0 == StatusCode::SERVICE_UNAVAILABLE
+                && response.1["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("indexing"));
+            if !indexing || std::time::Instant::now() >= deadline {
+                return response;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    async fn status_when_ready(app: &Router, module: &str) -> serde_json::Value {
+        let deadline = std::time::Instant::now() + LANGUAGE_SERVER_DEADLINE;
+        loop {
+            let (code, status) = json_request(
+                app,
                 "GET",
-                "/api/language-server?token=test-token",
+                &format!("/api/language-server?token=test-token&module={module}"),
                 serde_json::Value::Null,
             )
             .await;
-            if status.1["state"] == "indexing" && std::time::Instant::now() < deadline {
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                continue;
+            assert_eq!(code, StatusCode::OK, "{status}");
+            if status["state"] != "indexing" || std::time::Instant::now() >= deadline {
+                return status;
             }
-            break status;
-        };
-        assert_eq!(status.0, StatusCode::OK);
-        assert_eq!(status.1["state"], "ready", "{}", status.1);
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
     }
 
     #[tokio::test]
@@ -1347,7 +1399,7 @@ mod tests {
             revisions,
             documents: RwLock::new(normalize_documents(&root, documents)),
             scheduled_refresh: StdMutex::new(None),
-            rust_analyzer: RustAnalyzer::new(root.clone()),
+            language_servers: LanguageServers::new(root.clone()),
             settings: SettingsStore::at(Some(root.join("target/test-settings.json"))),
             notes: Notes::at(root.join("target/test-notes"), &root).unwrap(),
             storage: Storage::disk(),

@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 
 import runtimeWasm from "web-tree-sitter/web-tree-sitter.wasm?url";
+import javascriptWasm from "tree-sitter-javascript/tree-sitter-javascript.wasm?url";
 import rustWasm from "tree-sitter-rust/tree-sitter-rust.wasm?url";
+import tsxWasm from "tree-sitter-typescript/tree-sitter-tsx.wasm?url";
+import typescriptWasm from "tree-sitter-typescript/tree-sitter-typescript.wasm?url";
 
-import { HelixState, keyFromEvent, loadRustSyntax } from "./helix/index.js";
+import { HelixState, keyFromEvent, loadSyntax } from "./helix/index.js";
+import ecmaObjects from "./helix/ecma_textobjects.scm?raw";
+import rustObjects from "./helix/rust_textobjects.scm?raw";
+import typescriptObjects from "./helix/typescript_textobjects.scm?raw";
 
 const INITIAL_STATUS = { mode: "normal", pending: "", prompt: undefined, message: undefined, recording: undefined };
 
@@ -96,15 +102,30 @@ function caretShift(editor) {
   return shifts.size === 1 ? [...shifts][0] : "0 0";
 }
 
-// Loaded once, the first time Helix mode turns on; a failed load is retried next time.
-let rustSyntax;
+// The grammar for each kind of file, as Helix picks them; JSX parses with the
+// JavaScript grammar.
+const GRAMMARS = {
+  rust: { name: "Rust", grammar: rustWasm, textObjects: rustObjects, extensions: ["rs"] },
+  javascript: { name: "JavaScript", grammar: javascriptWasm, textObjects: ecmaObjects, extensions: ["js", "jsx", "mjs", "cjs"] },
+  typescript: { name: "TypeScript", grammar: typescriptWasm, textObjects: typescriptObjects, extensions: ["ts", "mts", "cts"] },
+  tsx: { name: "TSX", grammar: tsxWasm, textObjects: typescriptObjects, extensions: ["tsx"] },
+};
 
-function loadSyntax() {
-  rustSyntax ??= loadRustSyntax({ runtime: runtimeWasm, grammar: rustWasm }).catch((error) => {
-    rustSyntax = undefined;
+const grammarFor = (fileName) => {
+  const extension = fileName?.split(".").pop();
+  return Object.keys(GRAMMARS).find((key) => GRAMMARS[key].extensions.includes(extension));
+};
+
+// Each loaded once, the first time Helix mode opens such a file; a failed load is retried next time.
+const loaded = {};
+
+function loadGrammar(key) {
+  const { grammar, textObjects } = GRAMMARS[key];
+  loaded[key] ??= loadSyntax({ runtime: runtimeWasm, grammar, textObjects }).catch((error) => {
+    delete loaded[key];
     throw error;
   });
-  return rustSyntax;
+  return loaded[key];
 }
 
 function scrollToLine(container, line, block) {
@@ -123,22 +144,23 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     jumpTo: (target, options) => engineActions.current?.jumpTo(target, options),
     notify: (text, error = false) => setStatus((current) => ({ ...current, message: { text, error } })),
   }));
-  const [syntax, setSyntax] = useState(undefined);
-  latest.current = { editor, fileName, onCommand, syntax: fileName?.endsWith(".rs") ? syntax : undefined };
+  // Syntax-aware commands need a grammar, so files without one go without.
+  const grammar = grammarFor(fileName);
+  const [syntaxes, setSyntaxes] = useState({});
+  // Null for a file without a grammar; undefined while its grammar loads.
+  latest.current = { editor, fileName, onCommand, syntax: grammar ? syntaxes[grammar] : null };
 
-  // Syntax-aware commands use the Rust grammar, so other files go without.
-  const rust = Boolean(fileName?.endsWith(".rs"));
   useEffect(() => {
-    if (!enabled || syntax || !rust) return undefined;
+    if (!enabled || !grammar || syntaxes[grammar]) return undefined;
     let live = true;
-    loadSyntax().then(
-      (loaded) => live && setSyntax(() => loaded),
-      (error) => live && actions.notify(`could not load the Rust grammar: ${error.message}`, true),
+    loadGrammar(grammar).then(
+      (syntax) => live && setSyntaxes((current) => ({ ...current, [grammar]: syntax })),
+      (error) => live && actions.notify(`could not load the ${GRAMMARS[grammar].name} grammar: ${error.message}`, true),
     );
     return () => {
       live = false;
     };
-  }, [enabled, syntax, rust, actions]);
+  }, [enabled, grammar, syntaxes, actions]);
 
   useEffect(() => {
     if (!enabled || !container) return undefined;

@@ -1,7 +1,10 @@
 import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { keyFromEvent, loadRustSyntax } from "./index.js";
+import { keyFromEvent, loadSyntax } from "./index.js";
+import ecmaObjects from "./ecma_textobjects.scm?raw";
+import rustObjects from "./rust_textobjects.scm?raw";
+import typescriptObjects from "./typescript_textobjects.scm?raw";
 import { Engine } from "./state.js";
 import { Text } from "./text.js";
 
@@ -443,9 +446,10 @@ describe("syntax tree", () => {
   let syntax;
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
-    syntax = await loadRustSyntax({
+    syntax = await loadSyntax({
       runtime: require.resolve("web-tree-sitter/web-tree-sitter.wasm"),
       grammar: require.resolve("tree-sitter-rust/tree-sitter-rust.wasm"),
+      textObjects: rustObjects,
     });
   });
   const rust = (marked) => editor(marked, { syntax });
@@ -495,5 +499,38 @@ describe("syntax tree", () => {
   it("reports when the grammar has not loaded yet", () => {
     const session = editor("⟨a⟩\n").keys("<A-o>");
     expect(session.doc.last.message).toEqual({ text: "the syntax tree is still loading", error: true });
+  });
+});
+
+describe("JavaScript and TypeScript syntax trees", () => {
+  const grammars = {};
+  beforeAll(async () => {
+    const require = createRequire(import.meta.url);
+    const load = (grammar, textObjects) => loadSyntax({
+      runtime: require.resolve("web-tree-sitter/web-tree-sitter.wasm"),
+      grammar: require.resolve(grammar),
+      textObjects,
+    });
+    grammars.javascript = await load("tree-sitter-javascript/tree-sitter-javascript.wasm", ecmaObjects);
+    grammars.typescript = await load("tree-sitter-typescript/tree-sitter-typescript.wasm", typescriptObjects);
+    grammars.tsx = await load("tree-sitter-typescript/tree-sitter-tsx.wasm", typescriptObjects);
+  });
+  const in_ = (grammar) => (marked) => editor(marked, { syntax: grammars[grammar] });
+
+  it("selects functions and classes in JavaScript, JSX included", () => {
+    const javascript = in_("javascript");
+    expect(javascript("const f = () => { ⟨a⟩(); };\n").keys("maf").state).toBe("const f = ⟨() => { a(); }⟩;\n");
+    expect(javascript("class A { m() { ⟨x⟩; } }\n").keys("mat").state).toBe("⟨class A { m() { x; } }⟩\n");
+    expect(javascript("const v = <div>{⟨a⟩}</div>;\nfunction g() {}\n").keys("]f").state)
+      .toBe("const v = <div>{a}</div>;\n⟨function g() {}⟩\n");
+  });
+
+  it("selects TypeScript interfaces as classes and parameters with their types", () => {
+    const typescript = in_("typescript");
+    expect(typescript("interface A { ⟨b⟩: number }\n").keys("mat").state).toBe("⟨interface A { b: number }⟩\n");
+    expect(typescript("function f(⟨a⟩: number, b: string) {}\n").keys("mia").state)
+      .toBe("function f(⟨a: number⟩, b: string) {}\n");
+    expect(in_("tsx")("const v = <A b={(⟨x⟩: number) => x} />;\n").keys("maf").state)
+      .toBe("const v = <A b={⟨(x: number) => x⟩} />;\n");
   });
 });
