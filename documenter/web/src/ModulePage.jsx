@@ -3,10 +3,10 @@ import { useMemo, useState } from "react";
 import { api, routes } from "./api.js";
 import Markdown from "./Markdown.jsx";
 import { suggestedFilename } from "./names.js";
-import { markdownKinds, markdownResource } from "./resources.js";
 
-function NewMarkdownDialog({ module, kind, onClose }) {
-  const resource = markdownResource(kind);
+const PLACEHOLDER = "Alternative rendering model";
+
+function NewExplorationDialog({ module, onClose }) {
   const [title, setTitle] = useState("");
   const [filename, setFilename] = useState("");
   const [filenameEdited, setFilenameEdited] = useState(false);
@@ -19,13 +19,13 @@ function NewMarkdownDialog({ module, kind, onClose }) {
     setError("");
     try {
       const document = await api(
-        resource.collectionApi,
+        "/api/explorations",
         {
           method: "POST",
           body: JSON.stringify({ module: module.id, title, filename }),
         },
       );
-      window.location.assign(routes.markdown(kind, module.id, document.filename));
+      window.location.assign(routes.exploration(module.id, document.filename));
     } catch (reason) {
       setError(reason.message);
       setSaving(false);
@@ -34,8 +34,8 @@ function NewMarkdownDialog({ module, kind, onClose }) {
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby={`new-${kind}-title`} onMouseDown={(event) => event.stopPropagation()}>
-        <h2 id={`new-${kind}-title`}>New {kind}</h2>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-exploration-title" onMouseDown={(event) => event.stopPropagation()}>
+        <h2 id="new-exploration-title">New exploration</h2>
         <form onSubmit={create}>
           <label>
             Title
@@ -47,7 +47,7 @@ function NewMarkdownDialog({ module, kind, onClose }) {
                 setTitle(next);
                 if (!filenameEdited) setFilename(suggestedFilename(next));
               }}
-              placeholder={resource.placeholder}
+              placeholder={PLACEHOLDER}
             />
           </label>
           <label>
@@ -59,7 +59,7 @@ function NewMarkdownDialog({ module, kind, onClose }) {
                   setFilenameEdited(true);
                   setFilename(event.target.value.replace(/\.md$/i, ""));
                 }}
-                placeholder={suggestedFilename(resource.placeholder)}
+                placeholder={suggestedFilename(PLACEHOLDER)}
               />
               <span>.md</span>
             </span>
@@ -68,7 +68,7 @@ function NewMarkdownDialog({ module, kind, onClose }) {
           <footer className="modal-actions">
             <button type="button" onClick={onClose}>Cancel</button>
             <button className="primary" type="submit" disabled={saving || !title.trim() || !filename.trim()}>
-              {saving ? "Creating…" : `Create ${kind}`}
+              {saving ? "Creating…" : "Create exploration"}
             </button>
           </footer>
         </form>
@@ -77,37 +77,36 @@ function NewMarkdownDialog({ module, kind, onClose }) {
   );
 }
 
-function MarkdownSection({ module, kind, onCreate }) {
-  const resource = markdownResource(kind);
-  const documents = module[resource.plural];
+// Rough notes and drawings, kept outside the repository (see the README).
+function ExplorationSection({ module, notes, onCreate }) {
   return (
     <section className="content-section">
       <div className="section-heading-row">
-        <h2>{resource.title}s</h2>
+        <h2>Explorations</h2>
         <button className="primary" type="button" onClick={onCreate}>
-          New {kind}
+          New exploration
         </button>
       </div>
-      {documents.length > 0 ? (
+      {notes.length > 0 ? (
         <ul className="document-list">
-          {documents.map((document) => (
-            <li key={document.filename}>
-              <a href={routes.markdown(kind, module.id, document.filename)}>
-                <span>{document.title}</span>
-                <code>{document.filename}</code>
+          {notes.map((note) => (
+            <li key={note.filename}>
+              <a href={routes.exploration(module.id, note.filename)}>
+                <span>{note.title}</span>
+                <code>{note.filename}</code>
               </a>
             </li>
           ))}
         </ul>
       ) : (
-        <p className="empty-copy">{resource.empty}</p>
+        <p className="empty-copy">No explorations have been written for this module.</p>
       )}
     </section>
   );
 }
 
-export default function ModulePage({ workspace, moduleId }) {
-  const [creating, setCreating] = useState(null);
+export default function ModulePage({ workspace, explorations, moduleId }) {
+  const [creating, setCreating] = useState(false);
   const module = useMemo(
     () => workspace.modules.find((candidate) => candidate.id === moduleId),
     [workspace, moduleId],
@@ -135,17 +134,9 @@ export default function ModulePage({ workspace, moduleId }) {
             <p className="empty-copy">This module does not have native Rust documentation yet.</p>
           )}
         </section>
-        {module.file_backed && (
-          <>
-            {markdownKinds.map((kind) => (
-              <MarkdownSection key={kind} module={module} kind={kind} onCreate={() => setCreating(kind)} />
-            ))}
-          </>
-        )}
+        <ExplorationSection module={module} notes={explorations[module.id] ?? []} onCreate={() => setCreating(true)} />
       </div>
-      {creating && (
-        <NewMarkdownDialog module={module} kind={creating} onClose={() => setCreating(null)} />
-      )}
+      {creating && <NewExplorationDialog module={module} onClose={() => setCreating(false)} />}
     </main>
   );
 }

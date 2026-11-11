@@ -3,7 +3,6 @@ import { Excalidraw, exportToSvg } from "@excalidraw/excalidraw";
 import "@excalidraw/excalidraw/index.css";
 
 import { api, routes } from "./api.js";
-import { markdownKinds } from "./resources.js";
 
 function drawingSnapshot(elements, appState, files) {
   return JSON.stringify({
@@ -24,18 +23,10 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
   const savedSnapshot = useRef(null);
   const seenWorkspaceRevision = useRef(workspaceRevision);
   const from = useMemo(() => new URLSearchParams(window.location.search).get("from"), []);
-  const fromKind = useMemo(() => {
-    const kind = new URLSearchParams(window.location.search).get("kind");
-    return markdownKinds.includes(kind) ? kind : "explanation";
-  }, []);
-  const drawingKind = useMemo(() => {
-    const kind = new URLSearchParams(window.location.search).get("drawingKind");
-    return markdownKinds.includes(kind) ? kind : fromKind;
-  }, [fromKind]);
 
   const fetchDrawing = useCallback(
-    () => api("/api/drawing", {}, { module: moduleId, file: filename, kind: drawingKind }),
-    [moduleId, filename, drawingKind],
+    () => api("/api/drawing", {}, { module: moduleId, file: filename }),
+    [moduleId, filename],
   );
 
   const showDrawing = useCallback((loaded) => {
@@ -121,7 +112,7 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
             revision: drawing.revision,
           }),
         },
-        { module: moduleId, file: filename, kind: drawingKind },
+        { module: moduleId, file: filename },
       );
       savedSnapshot.current = drawingSnapshot(elements, appState, files);
       setDrawing(saved);
@@ -132,7 +123,7 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
       setError(reason.message);
       setStatus(reason.status === 409 ? "Conflict" : "Save failed");
     }
-  }, [drawing, moduleId, filename, drawingKind]);
+  }, [drawing, moduleId, filename]);
 
   useEffect(() => {
     const keydown = (event) => {
@@ -167,7 +158,7 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
     appState: { ...(scene.appState || {}), viewBackgroundColor: "#ffffff" },
     files: scene.files || {},
   };
-  const back = from ? routes.markdown(fromKind, moduleId, from) : routes.module(moduleId);
+  const back = from ? routes.exploration(moduleId, from) : routes.module(moduleId);
 
   return (
     <main className="drawing-page">

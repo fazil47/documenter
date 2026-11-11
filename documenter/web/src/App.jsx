@@ -4,7 +4,6 @@ import { api, apiUrl, token } from "./api.js";
 import GraphPage from "./GraphPage.jsx";
 import MarkdownPage from "./MarkdownPage.jsx";
 import ModulePage, { NotFound } from "./ModulePage.jsx";
-import { markdownResourceForPath } from "./resources.js";
 
 const CodePage = lazy(() => import("./CodePage.jsx"));
 const DrawingPage = lazy(() => import("./DrawingPage.jsx"));
@@ -21,9 +20,8 @@ function route() {
   if (segments[0] === "code" && segments.length === 2) {
     return { name: "code", module: segments[1] };
   }
-  const markdown = markdownResourceForPath(segments[0]);
-  if (markdown && segments.length === 3) {
-    return { name: "markdown", kind: markdown.kind, module: segments[1], file: segments[2] };
+  if (segments[0] === "explorations" && segments.length === 3) {
+    return { name: "exploration", module: segments[1], file: segments[2] };
   }
   if (segments[0] === "drawings" && segments.length === 3) {
     return { name: "drawing", module: segments[1], file: segments[2] };
@@ -33,6 +31,7 @@ function route() {
 
 export default function App() {
   const [workspace, setWorkspace] = useState(null);
+  const [explorations, setExplorations] = useState({});
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
 
@@ -40,6 +39,7 @@ export default function App() {
     try {
       const response = await api("/api/workspace");
       setWorkspace(response.workspace);
+      setExplorations(response.explorations);
       setRevision(response.revision);
       setError("");
     } catch (reason) {
@@ -67,11 +67,12 @@ export default function App() {
 
   const current = route();
   if (current.name === "graph") return <GraphPage workspace={workspace} />;
-  if (current.name === "module") return <ModulePage workspace={workspace} moduleId={current.module} />;
-  if (current.name === "markdown") {
+  if (current.name === "module") {
+    return <ModulePage workspace={workspace} explorations={explorations} moduleId={current.module} />;
+  }
+  if (current.name === "exploration") {
     return (
       <MarkdownPage
-        kind={current.kind}
         moduleId={current.module}
         filename={current.file}
         workspaceRevision={revision}

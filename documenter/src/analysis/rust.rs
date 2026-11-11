@@ -9,7 +9,7 @@ use syn::{Attribute, Expr, Item, ItemMod, ItemUse, Lit, Meta, UseTree};
 
 use super::cargo::Package;
 use super::cfg::{self, CfgSet};
-use super::{Edge, MarkdownFile, Module, markdown_file_title};
+use super::{Edge, Module};
 
 pub(super) struct Analysis {
     pub(super) modules: Vec<Module>,
@@ -164,11 +164,6 @@ impl<'a> ContextState<'a> {
     }
 
     fn insert_file_module(&mut self, id: &str, file_path: &Path, docs: String) {
-        let module_directory = module_directory(file_path);
-        let explanation_dir = module_directory.join("explanations");
-        let exploration_dir = module_directory.join("explorations");
-        let explanations = self.discover_markdown(&explanation_dir);
-        let explorations = self.discover_markdown(&exploration_dir);
         self.modules.insert(
             id.to_owned(),
             Module {
@@ -177,42 +172,9 @@ impl<'a> ContextState<'a> {
                 name: module_name(id),
                 docs,
                 folded: false,
-                explanations,
-                explorations,
                 source_path: Some(file_path.to_path_buf()),
-                explanation_dir: Some(explanation_dir),
-                exploration_dir: Some(exploration_dir),
             },
         );
-    }
-
-    fn discover_markdown(&mut self, directory: &Path) -> Vec<MarkdownFile> {
-        let mut documents = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(directory) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_file()
-                    || !path
-                        .extension()
-                        .and_then(|extension| extension.to_str())
-                        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-                {
-                    continue;
-                }
-                let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
-                    continue;
-                };
-                match markdown_file_title(&path) {
-                    Ok(title) => documents.push(MarkdownFile {
-                        filename: filename.to_owned(),
-                        title,
-                    }),
-                    Err(error) => self.warnings.push(error.to_string()),
-                }
-            }
-        }
-        documents.sort_by(|left, right| left.title.cmp(&right.title));
-        documents
     }
 
     fn insert_inline_module(&mut self, id: &str, docs: String) {
@@ -222,11 +184,7 @@ impl<'a> ContextState<'a> {
             name: module_name(id),
             docs,
             folded: false,
-            explanations: Vec::new(),
-            explorations: Vec::new(),
             source_path: None,
-            explanation_dir: None,
-            exploration_dir: None,
         });
     }
 

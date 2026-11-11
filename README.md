@@ -2,8 +2,9 @@
 
 `documenter` is an editor-agnostic Rust language server that opens a local,
 documentation-centric view of a codebase. Its web workspace combines an
-interactive module dependency graph, native Rust module documentation, Markdown
-explanations and explorations, and editable Excalidraw drawings.
+interactive module dependency graph, native Rust module documentation, the
+module source in an editor with optional Helix keybindings, and exploration
+notes with editable Excalidraw drawings.
 
 ## Build
 
@@ -69,18 +70,22 @@ code actions menu (`Cmd+.` on macOS or `Ctrl+.` on Windows/Linux).
 
 ## Documentation layout
 
-Explanations and explorations are available only for file-backed modules and
-live below that module's source directory:
+Every module can have explorations: rough Markdown notes for sketching out
+thoughts while reading the code. They are personal, so they live outside the
+repository, in a folder per workspace and module:
 
 ```text
-src/lib.rs          -> src/explanations/ and src/explorations/
-src/foo.rs          -> src/foo/explanations/ and src/foo/explorations/
-src/foo/mod.rs      -> src/foo/explanations/ and src/foo/explorations/
+~/.documenter/explorations/<workspace>/<crate>/<module_path>/<note>.md
 ```
 
-The first Markdown H1 is the displayed title. The filename is separate and does
-not change when the title is edited. Explorations use the same editor as
-explanations but remain listed separately as rough investigative notes.
+`<workspace>` is the workspace's absolute path with its separators replaced by
+`-`. The first Markdown H1 is the displayed title; the filename is separate and
+does not change when the title is edited. Explanations, and explorations kept
+in the repository (`src/**/explorations/` with drawings under `.documenter/`),
+are no longer read; move any notes you want to keep into the folder above.
+
+The module graph's dependency edges come from `use` declarations and from module
+paths used in code, such as `child::run()`.
 
 Projects can contract structural modules into their parents in the graph by
 matching exact final module names:
@@ -100,15 +105,7 @@ with visible child modules. Configured folding applies only to child modules;
 root documentation remains accessible from the graph.
 
 Drawings are editable SVG files with their Excalidraw scene embedded in the same
-file. They mirror the crate and module path from the repository root:
-
-```text
-explanations -> .documenter/drawings/<crate>/<module_path>/<drawing>.svg
-explorations -> .documenter/exploration_drawings/<crate>/<module_path>/<drawing>.svg
-```
-
-When updating an older workspace, rename `.documenter/exploration-drawings/`
-to `.documenter/exploration_drawings/` and update its Markdown image links.
+file. They sit beside the notes that embed them, linked as `![Name](name.svg)`.
 
 Project-owned directory, module, and crate names use underscores. The Zed
 extension directory and Cargo package are named `documenter_zed`; reinstall a
@@ -116,13 +113,14 @@ previous dev extension from this directory after updating an older checkout.
 
 Markdown edits use **Source** and **Preview** modes. `Cmd+Enter` on macOS or
 `Ctrl+Enter` on Windows/Linux toggles them. The visible **Save** button and
-`Cmd+S`/`Ctrl+S` save Markdown or drawing changes. External changes refresh live;
+`Cmd+S`/`Ctrl+S` save note or drawing changes. External changes refresh live;
 dirty editors keep their local text and report a conflict instead of overwriting
 disk content.
 
 File-backed modules also have a **View source** page that shows the module's
 Rust file with syntax highlighting and edits it in place. Saving uses the same
-`Cmd+S`/`Ctrl+S` shortcut and conflict detection as Markdown documents.
+`Cmd+S`/`Ctrl+S` shortcut and conflict detection as notes. The workspace
+follows the system's light or dark appearance.
 
 The source page's **Helix** toggle turns on Helix-style modal editing. The
 setting is saved in `~/.config/documenter/settings.json` (or under

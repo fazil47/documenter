@@ -22,7 +22,7 @@ mod tests {
     #[test]
     fn atomically_creates_and_replaces_files_without_leaving_temporaries() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("explanation.md");
+        let path = directory.path().join("note.md");
         atomic_write(&path, "first").unwrap();
         atomic_write(&path, "second").unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), "second");

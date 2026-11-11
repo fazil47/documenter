@@ -1,6 +1,6 @@
 //! Debounced filesystem refreshes for documentation inputs.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 use std::sync::Weak;
 use std::time::Duration;
 
@@ -16,28 +16,43 @@ pub(super) struct WorkspaceWatcher {
 }
 
 impl WorkspaceWatcher {
-    pub(super) fn start(root: &Path, state: Weak<AppState>) -> anyhow::Result<Self> {
+    /// Watches the workspace's sources and the exploration notes kept under `explorations`.
+    pub(super) fn start(
+        root: &Path,
+        explorations: &Path,
+        state: Weak<AppState>,
+    ) -> anyhow::Result<Self> {
         let root = root.to_path_buf();
         let event_root = root.clone();
+        let event_explorations = explorations.to_path_buf();
+        // Each event says whether the Rust workspace needs analyzing again;
+        // exploration notes only need clients to reload them.
         let (events, mut receiver) = mpsc::unbounded_channel();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                if event.is_ok_and(|event| {
-                    event
-                        .paths
-                        .iter()
-                        .any(|path| documentation_input(&event_root, path))
-                }) {
-                    let _ = events.send(());
+                let Ok(event) = event else { return };
+                if event
+                    .paths
+                    .iter()
+                    .any(|path| documentation_input(&event_root, path))
+                {
+                    let _ = events.send(true);
+                } else if event
+                    .paths
+                    .iter()
+                    .any(|path| exploration_input(&event_explorations, path))
+                {
+                    let _ = events.send(false);
                 }
             })?;
         watcher.watch(&root, RecursiveMode::Recursive)?;
+        watcher.watch(explorations, RecursiveMode::Recursive)?;
 
         let task = tokio::spawn(async move {
-            while receiver.recv().await.is_some() {
+            while let Some(mut analyze) = receiver.recv().await {
                 loop {
                     match tokio::time::timeout(Duration::from_millis(150), receiver.recv()).await {
-                        Ok(Some(())) => {}
+                        Ok(Some(more)) => analyze |= more,
                         Ok(None) => return,
                         Err(_) => break,
                     }
@@ -45,7 +60,11 @@ impl WorkspaceWatcher {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                let _ = state.refresh_workspace().await;
+                if analyze {
+                    let _ = state.refresh_workspace().await;
+                } else {
+                    state.bump_revision().await;
+                }
             }
         });
         Ok(Self {
@@ -74,17 +93,21 @@ fn documentation_input(root: &Path, path: &Path) -> bool {
     if relative == Path::new(".documenter/config.toml") {
         return true;
     }
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("rs") => true,
-        Some(extension) if extension.eq_ignore_ascii_case("md") => {
-            has_component(relative, "explanations") || has_component(relative, "explorations")
-        }
-        Some(extension) if extension.eq_ignore_ascii_case("svg") => {
-            relative.starts_with(PathBuf::from(".documenter").join("drawings"))
-                || relative.starts_with(PathBuf::from(".documenter").join("exploration_drawings"))
-        }
-        _ => false,
-    }
+    has_extension(path, &["rs"])
+}
+
+fn exploration_input(explorations: &Path, path: &Path) -> bool {
+    path.starts_with(explorations) && has_extension(path, &["md", "svg"])
+}
+
+fn has_extension(path: &Path, expected: &[&str]) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            expected
+                .iter()
+                .any(|expected| extension.eq_ignore_ascii_case(expected))
+        })
 }
 
 fn ignored_path(relative: &Path) -> bool {
@@ -94,11 +117,6 @@ fn ignored_path(relative: &Path) -> bool {
         || relative
             .components()
             .any(|component| matches!(component, Component::Normal(name) if name == "node_modules"))
-}
-
-fn has_component(path: &Path, expected: &str) -> bool {
-    path.components()
-        .any(|component| matches!(component, Component::Normal(name) if name == expected))
 }
 
 #[cfg(test)]
@@ -114,23 +132,7 @@ mod tests {
         ));
         assert!(documentation_input(
             root,
-            Path::new("/workspace/src/foo/explanations/design.md")
-        ));
-        assert!(documentation_input(
-            root,
-            Path::new("/workspace/src/foo/explorations/idea.md")
-        ));
-        assert!(documentation_input(
-            root,
             Path::new("/workspace/.documenter/config.toml")
-        ));
-        assert!(documentation_input(
-            root,
-            Path::new("/workspace/.documenter/drawings/app/foo.svg")
-        ));
-        assert!(documentation_input(
-            root,
-            Path::new("/workspace/.documenter/exploration_drawings/app/foo.svg")
         ));
         assert!(!documentation_input(
             root,
@@ -139,6 +141,19 @@ mod tests {
         assert!(!documentation_input(
             root,
             Path::new("/workspace/docs/notes.md")
+        ));
+        let explorations = Path::new("/home/.documenter/explorations/-workspace");
+        assert!(exploration_input(
+            explorations,
+            Path::new("/home/.documenter/explorations/-workspace/app/foo/idea.md")
+        ));
+        assert!(exploration_input(
+            explorations,
+            Path::new("/home/.documenter/explorations/-workspace/app/foo/sketch.svg")
+        ));
+        assert!(!exploration_input(
+            explorations,
+            Path::new("/workspace/src/foo/explorations/idea.md")
         ));
     }
 }

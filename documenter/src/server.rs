@@ -1,5 +1,6 @@
 //! Local documentation server and repository write boundary.
 
+mod explorations;
 mod rust_analyzer;
 mod settings;
 mod storage;
@@ -29,10 +30,11 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
+use self::explorations::{Explorations, Note, note_title};
 use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer, ServerStatus};
 use self::settings::{Settings, Store as SettingsStore};
 use self::storage::atomic_write;
-use crate::analysis::{DrawingCollection, Workspace, markdown_title};
+use crate::analysis::Workspace;
 use crate::drawing::{
     create_empty_drawing_svg, extract_scene_from_svg, has_embedded_scene,
     has_opaque_white_background, merge_export_svg_with_scene,
@@ -67,6 +69,7 @@ struct AppState {
     scheduled_refresh: StdMutex<Option<JoinHandle<()>>>,
     rust_analyzer: RustAnalyzer,
     settings: SettingsStore,
+    explorations: Explorations,
 }
 
 struct ModelState {
@@ -90,6 +93,7 @@ impl DocumentationServer {
         })
         .await??;
         let root = workspace.root().to_path_buf();
+        let explorations = Explorations::for_workspace(&root)?;
         let (revisions, _) = broadcast::channel(32);
         let state = Arc::new(AppState {
             root: root.clone(),
@@ -104,8 +108,13 @@ impl DocumentationServer {
             scheduled_refresh: StdMutex::new(None),
             rust_analyzer: RustAnalyzer::new(root.clone()),
             settings: SettingsStore::for_user(),
+            explorations,
         });
-        let watcher = watch::WorkspaceWatcher::start(&root, Arc::downgrade(&state))?;
+        let watcher = watch::WorkspaceWatcher::start(
+            &root,
+            state.explorations.root(),
+            Arc::downgrade(&state),
+        )?;
         Ok(Self {
             control: Arc::new(Control {
                 state,
@@ -270,11 +279,6 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/workspace", get(get_workspace))
         .route("/api/events", get(events))
         .route(
-            "/api/explanation",
-            get(get_explanation).put(put_explanation),
-        )
-        .route("/api/explanations", post(create_explanation))
-        .route(
             "/api/exploration",
             get(get_exploration).put(put_exploration),
         )
@@ -314,14 +318,14 @@ struct DrawingQuery {
     token: String,
     module: String,
     file: String,
-    #[serde(default)]
-    kind: MarkdownKind,
 }
 
 #[derive(Serialize)]
 struct WorkspaceResponse {
     revision: u64,
     workspace: Workspace,
+    /// Each module's exploration notes, by module id.
+    explorations: std::collections::BTreeMap<String, Vec<Note>>,
 }
 
 async fn get_workspace(
@@ -330,9 +334,16 @@ async fn get_workspace(
 ) -> ApiResult<Json<WorkspaceResponse>> {
     state.authorize(&query.token)?;
     let model = state.model.read().await;
+    let (revision, workspace) = (model.revision, model.workspace.clone());
+    drop(model);
+    // Notes are read from disk, so not under the model lock.
+    let explorations = state
+        .explorations
+        .notes(workspace.module_ids().map(str::to_owned));
     Ok(Json(WorkspaceResponse {
-        revision: model.revision,
-        workspace: model.workspace.clone(),
+        revision,
+        workspace,
+        explorations,
     }))
 }
 
@@ -354,7 +365,7 @@ async fn events(
 }
 
 #[derive(Serialize)]
-struct MarkdownResponse {
+struct ExplorationResponse {
     module: String,
     filename: String,
     title: String,
@@ -362,34 +373,19 @@ struct MarkdownResponse {
     revision: String,
 }
 
-async fn get_explanation(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<ResourceQuery>,
-) -> ApiResult<Json<MarkdownResponse>> {
-    get_markdown(state, query, MarkdownKind::Explanation).await
-}
-
 async fn get_exploration(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ResourceQuery>,
-) -> ApiResult<Json<MarkdownResponse>> {
-    get_markdown(state, query, MarkdownKind::Exploration).await
-}
-
-async fn get_markdown(
-    state: Arc<AppState>,
-    query: ResourceQuery,
-    kind: MarkdownKind,
-) -> ApiResult<Json<MarkdownResponse>> {
+) -> ApiResult<Json<ExplorationResponse>> {
     state.authorize(&query.token)?;
-    let path = markdown_path(&state, kind, &query.module, &query.file).await?;
-    ensure_safe_existing_file(&state.root, &path)?;
+    ensure_module(&state, &query.module).await?;
+    let path = state.explorations.note(&query.module, &query.file)?;
     let content = std::fs::read_to_string(&path)
-        .map_err(|error| ApiError::io(&format!("reading {}", kind.name()), error))?;
-    Ok(Json(MarkdownResponse {
+        .map_err(|error| ApiError::io("reading exploration", error))?;
+    Ok(Json(ExplorationResponse {
         module: query.module,
         filename: query.file,
-        title: markdown_title(&content, &path),
+        title: note_title(&content, &path),
         revision: content_revision(&content),
         content,
     }))
@@ -401,93 +397,53 @@ struct SaveContent {
     revision: String,
 }
 
-async fn put_explanation(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<ResourceQuery>,
-    Json(body): Json<SaveContent>,
-) -> ApiResult<Json<MarkdownResponse>> {
-    put_markdown(state, query, body, MarkdownKind::Explanation).await
-}
-
 async fn put_exploration(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ResourceQuery>,
     Json(body): Json<SaveContent>,
-) -> ApiResult<Json<MarkdownResponse>> {
-    put_markdown(state, query, body, MarkdownKind::Exploration).await
-}
-
-async fn put_markdown(
-    state: Arc<AppState>,
-    query: ResourceQuery,
-    body: SaveContent,
-    kind: MarkdownKind,
-) -> ApiResult<Json<MarkdownResponse>> {
+) -> ApiResult<Json<ExplorationResponse>> {
     state.authorize(&query.token)?;
-    let path = markdown_path(&state, kind, &query.module, &query.file).await?;
-    save_if_unchanged(&state, &path, &body, kind.name()).await?;
-    Ok(Json(MarkdownResponse {
+    ensure_module(&state, &query.module).await?;
+    let path = state.explorations.note(&query.module, &query.file)?;
+    write_if_unchanged(&path, &body, "exploration")?;
+    state.bump_revision().await;
+    Ok(Json(ExplorationResponse {
         module: query.module,
         filename: query.file,
-        title: markdown_title(&body.content, &path),
+        title: note_title(&body.content, &path),
         revision: content_revision(&body.content),
         content: body.content,
     }))
 }
 
 #[derive(Debug, Deserialize)]
-struct NewMarkdown {
+struct NewExploration {
     module: String,
     title: String,
     filename: String,
 }
 
-async fn create_explanation(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<AuthQuery>,
-    Json(body): Json<NewMarkdown>,
-) -> ApiResult<(StatusCode, Json<MarkdownResponse>)> {
-    create_markdown(state, query, body, MarkdownKind::Explanation).await
-}
-
 async fn create_exploration(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AuthQuery>,
-    Json(body): Json<NewMarkdown>,
-) -> ApiResult<(StatusCode, Json<MarkdownResponse>)> {
-    create_markdown(state, query, body, MarkdownKind::Exploration).await
-}
-
-async fn create_markdown(
-    state: Arc<AppState>,
-    query: AuthQuery,
-    body: NewMarkdown,
-    kind: MarkdownKind,
-) -> ApiResult<(StatusCode, Json<MarkdownResponse>)> {
+    Json(body): Json<NewExploration>,
+) -> ApiResult<(StatusCode, Json<ExplorationResponse>)> {
     state.authorize(&query.token)?;
     let title = validate_title(&body.title)?;
-    let filename = normalize_markdown_filename(&body.filename)?;
-    let path = markdown_path(&state, kind, &body.module, &filename).await?;
-    ensure_safe_parent(
-        &state.root,
-        path.parent().expect("Markdown document has parent"),
-    )?;
-    if path.exists() {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            format!("a {} with that filename already exists", kind.name()),
-        ));
-    }
+    ensure_module(&state, &body.module).await?;
+    let (path, filename) = state
+        .explorations
+        .new_note(&body.module, &body.filename)
+        .map_err(|error| {
+            ApiError::from(error).conflict("an exploration with that filename already exists")
+        })?;
     let content = format!("# {title}\n");
     atomic_write(&path, &content)
-        .map_err(|error| ApiError::internal(&format!("creating {}", kind.name()), error))?;
-    state
-        .refresh_workspace()
-        .await
-        .map_err(|error| ApiError::internal("refreshing workspace", error))?;
+        .map_err(|error| ApiError::internal("creating exploration", error))?;
+    state.bump_revision().await;
     Ok((
         StatusCode::CREATED,
-        Json(MarkdownResponse {
+        Json(ExplorationResponse {
             module: body.module,
             filename,
             title,
@@ -498,13 +454,7 @@ async fn create_markdown(
 }
 
 /// Replaces `path` only if its content still matches the revision the client edited.
-async fn save_if_unchanged(
-    state: &AppState,
-    path: &Path,
-    body: &SaveContent,
-    name: &str,
-) -> ApiResult<()> {
-    ensure_safe_existing_file(&state.root, path)?;
+fn write_if_unchanged(path: &Path, body: &SaveContent, name: &str) -> ApiResult<()> {
     let current = std::fs::read_to_string(path)
         .map_err(|error| ApiError::io(&format!("reading {name}"), error))?;
     if content_revision(&current) != body.revision {
@@ -514,11 +464,7 @@ async fn save_if_unchanged(
         ));
     }
     atomic_write(path, &body.content)
-        .map_err(|error| ApiError::internal(&format!("saving {name}"), error))?;
-    state
-        .refresh_workspace()
-        .await
-        .map_err(|error| ApiError::internal("refreshing workspace", error))
+        .map_err(|error| ApiError::internal(&format!("saving {name}"), error))
 }
 
 #[derive(Serialize)]
@@ -561,7 +507,12 @@ async fn put_source(
             "the source file has unsaved changes in the editor; save or revert them there first",
         ));
     }
-    save_if_unchanged(&state, &path, &body, "source file").await?;
+    ensure_safe_existing_file(&state.root, &path)?;
+    write_if_unchanged(&path, &body, "source file")?;
+    state
+        .refresh_workspace()
+        .await
+        .map_err(|error| ApiError::internal("refreshing workspace", error))?;
     Ok(Json(SourceResponse {
         path: display_path(&state.root, &path),
         revision: content_revision(&body.content),
@@ -704,8 +655,8 @@ async fn get_drawing(
     Query(query): Query<DrawingQuery>,
 ) -> ApiResult<Json<DrawingResponse>> {
     state.authorize(&query.token)?;
-    let path = drawing_path(&state, query.kind, &query.module, &query.file).await?;
-    ensure_safe_existing_file(&state.root, &path)?;
+    ensure_module(&state, &query.module).await?;
+    let path = state.explorations.drawing(&query.module, &query.file)?;
     let svg =
         std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading drawing", error))?;
     let scene = extract_scene_from_svg(&svg)
@@ -733,8 +684,8 @@ async fn put_drawing(
     Json(body): Json<SaveDrawing>,
 ) -> ApiResult<Json<DrawingResponse>> {
     state.authorize(&query.token)?;
-    let path = drawing_path(&state, query.kind, &query.module, &query.file).await?;
-    ensure_safe_existing_file(&state.root, &path)?;
+    ensure_module(&state, &query.module).await?;
+    let path = state.explorations.drawing(&query.module, &query.file)?;
     let current =
         std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading drawing", error))?;
     if content_revision(&current) != body.revision {
@@ -772,7 +723,6 @@ async fn put_drawing(
 struct NewDrawing {
     module: String,
     document: String,
-    kind: MarkdownKind,
     name: String,
 }
 
@@ -790,33 +740,24 @@ async fn create_drawing(
 ) -> ApiResult<(StatusCode, Json<NewDrawingResponse>)> {
     state.authorize(&query.token)?;
     let display_name = validate_title(&body.name)?;
-    let stem = display_name.to_case(Case::Snake);
-    let filename = normalize_drawing_filename(&format!("{stem}.svg"))?;
-    let document = markdown_path(&state, body.kind, &body.module, &body.document).await?;
-    ensure_safe_existing_file(&state.root, &document)?;
-    let path = drawing_path(&state, body.kind, &body.module, &filename).await?;
-    ensure_safe_parent(&state.root, path.parent().expect("drawing has parent"))?;
-    if path.exists() {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "a drawing with that name already exists in this module",
-        ));
-    }
+    ensure_module(&state, &body.module).await?;
+    state.explorations.note(&body.module, &body.document)?;
+    let (path, filename) = state
+        .explorations
+        .new_drawing(&body.module, &display_name.to_case(Case::Snake))
+        .map_err(|error| {
+            ApiError::from(error).conflict("a drawing with that name already exists in this module")
+        })?;
     let svg = create_empty_drawing_svg();
     atomic_write(&path, &svg).map_err(|error| ApiError::internal("creating drawing", error))?;
-    let relative = pathdiff::diff_paths(
-        &path,
-        document.parent().expect("Markdown document has parent"),
-    )
-    .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "cannot link drawing"))?;
-    let relative = relative.to_string_lossy().replace('\\', "/");
     state.bump_revision().await;
     Ok((
         StatusCode::CREATED,
         Json(NewDrawingResponse {
             module: body.module,
+            // Drawings sit beside the notes that embed them.
+            markdown: format!("![{display_name}]({filename})"),
             filename,
-            markdown: format!("![{display_name}]({relative})"),
         }),
     ))
 }
@@ -826,48 +767,19 @@ async fn get_drawing_file(
     Query(query): Query<DrawingQuery>,
 ) -> ApiResult<Response> {
     state.authorize(&query.token)?;
-    let path = drawing_path(&state, query.kind, &query.module, &query.file).await?;
-    ensure_safe_existing_file(&state.root, &path)?;
+    ensure_module(&state, &query.module).await?;
+    let path = state.explorations.drawing(&query.module, &query.file)?;
     let bytes = std::fs::read(path).map_err(|error| ApiError::io("reading drawing", error))?;
     Ok(([(header::CONTENT_TYPE, "image/svg+xml")], bytes).into_response())
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum MarkdownKind {
-    #[default]
-    Explanation,
-    Exploration,
-}
-
-impl MarkdownKind {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Explanation => "explanation",
-            Self::Exploration => "exploration",
-        }
-    }
-
-    fn drawing_collection(self) -> DrawingCollection {
-        match self {
-            Self::Explanation => DrawingCollection::Explanations,
-            Self::Exploration => DrawingCollection::Explorations,
-        }
-    }
-}
-
-async fn markdown_path(
-    state: &AppState,
-    kind: MarkdownKind,
-    module: &str,
-    filename: &str,
-) -> ApiResult<PathBuf> {
+async fn ensure_module(state: &AppState, module: &str) -> ApiResult<()> {
     let model = state.model.read().await;
-    let path = match kind {
-        MarkdownKind::Explanation => model.workspace.explanation_path(module, filename),
-        MarkdownKind::Exploration => model.workspace.exploration_path(module, filename),
-    };
-    path.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, format!("{} not found", kind.name())))
+    if model.workspace.module_ids().any(|id| id == module) {
+        Ok(())
+    } else {
+        Err(ApiError::new(StatusCode::NOT_FOUND, "module not found"))
+    }
 }
 
 async fn source_path(state: &AppState, module: &str) -> ApiResult<PathBuf> {
@@ -884,60 +796,6 @@ fn display_path(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-async fn drawing_path(
-    state: &AppState,
-    kind: MarkdownKind,
-    module: &str,
-    filename: &str,
-) -> ApiResult<PathBuf> {
-    let filename = normalize_drawing_filename(filename)?;
-    let model = state.model.read().await;
-    Ok(model
-        .workspace
-        .drawing_dir(module, kind.drawing_collection())
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "module not found"))?
-        .join(filename))
-}
-
-fn normalize_markdown_filename(filename: &str) -> ApiResult<String> {
-    let filename = filename.trim();
-    let filename = strip_extension(filename, "md").trim();
-    if filename.is_empty()
-        || !filename
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "filename may contain only letters, numbers, underscores, and dashes",
-        ));
-    }
-    Ok(format!("{filename}.md"))
-}
-
-fn normalize_drawing_filename(filename: &str) -> ApiResult<String> {
-    let filename = filename.trim();
-    let stem = strip_extension(filename, "svg");
-    if stem.is_empty()
-        || !stem
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
-    {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "drawing name may contain only letters, numbers, underscores, and dashes",
-        ));
-    }
-    Ok(format!("{stem}.svg"))
-}
-
-fn strip_extension<'a>(filename: &'a str, extension: &str) -> &'a str {
-    filename
-        .rsplit_once('.')
-        .filter(|(_, suffix)| suffix.eq_ignore_ascii_case(extension))
-        .map_or(filename, |(stem, _)| stem)
 }
 
 fn validate_title(title: &str) -> ApiResult<String> {
@@ -965,39 +823,6 @@ fn ensure_safe_existing_file(root: &Path, path: &Path) -> ApiResult<()> {
         .canonicalize()
         .map_err(|error| ApiError::io("resolving file", error))?;
     if !canonical.starts_with(root) || !canonical.is_file() {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "path escapes workspace",
-        ));
-    }
-    Ok(())
-}
-
-fn ensure_safe_parent(root: &Path, parent: &Path) -> ApiResult<()> {
-    let root = root
-        .canonicalize()
-        .map_err(|error| ApiError::io("resolving workspace", error))?;
-    let mut existing = parent;
-    while !existing.exists() {
-        existing = existing.parent().ok_or_else(|| {
-            ApiError::new(StatusCode::FORBIDDEN, "documentation path has no parent")
-        })?;
-    }
-    let existing = existing
-        .canonicalize()
-        .map_err(|error| ApiError::io("resolving documentation directory", error))?;
-    if !existing.starts_with(&root) {
-        return Err(ApiError::new(
-            StatusCode::FORBIDDEN,
-            "path escapes workspace",
-        ));
-    }
-    std::fs::create_dir_all(parent)
-        .map_err(|error| ApiError::io("creating documentation directory", error))?;
-    let parent = parent
-        .canonicalize()
-        .map_err(|error| ApiError::io("resolving documentation directory", error))?;
-    if !parent.starts_with(&root) {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
             "path escapes workspace",
@@ -1087,11 +912,35 @@ impl ApiError {
         Self::new(status, format!("{context}: {error}"))
     }
 
+    /// Replaces the message of a conflict, which only the caller can word.
+    fn conflict(self, message: &str) -> Self {
+        if self.status == StatusCode::CONFLICT {
+            Self::new(StatusCode::CONFLICT, message)
+        } else {
+            self
+        }
+    }
+
     fn internal(context: &str, error: impl std::fmt::Display) -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("{context}: {error}"),
         )
+    }
+}
+
+impl From<explorations::Error> for ApiError {
+    fn from(error: explorations::Error) -> Self {
+        match error {
+            explorations::Error::Name(message) => Self::new(StatusCode::BAD_REQUEST, message),
+            explorations::Error::Missing => Self::new(StatusCode::NOT_FOUND, "not found"),
+            explorations::Error::Exists => Self::new(StatusCode::CONFLICT, "already exists"),
+            explorations::Error::Outside => Self::new(
+                StatusCode::FORBIDDEN,
+                "path escapes the explorations folder",
+            ),
+            explorations::Error::Io(error) => Self::io("accessing explorations", error),
+        }
     }
 }
 
@@ -1118,32 +967,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_document_names_without_coupling_title_and_filename() {
-        assert_eq!(
-            normalize_markdown_filename("frame_loop").unwrap(),
-            "frame_loop.md"
-        );
-        assert_eq!(
-            normalize_markdown_filename("HTTP_notes.md").unwrap(),
-            "HTTP_notes.md"
-        );
-        assert_eq!(
-            normalize_markdown_filename("HTTP_notes.MD").unwrap(),
-            "HTTP_notes.md"
-        );
-        assert!(normalize_markdown_filename("../escape").is_err());
-    }
-
-    #[test]
     fn content_revisions_change_with_content() {
         assert_ne!(content_revision("one"), content_revision("two"));
         assert_eq!(content_revision("one"), content_revision("one"));
     }
 
     #[tokio::test]
-    async fn api_writes_markdown_documents_and_mirrored_drawings_with_conflict_checks() {
+    async fn api_writes_explorations_and_their_drawings_outside_the_workspace() {
         let project = sample_project();
         let app = test_router(project.path());
+        let store = project
+            .path()
+            .join("target/test-explorations/sample/engine");
 
         let unauthorized = app
             .clone()
@@ -1156,35 +991,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-
-        let created = json_request(
-            &app,
-            "POST",
-            "/api/explanations?token=test-token",
-            serde_json::json!({
-                "module": "sample::engine",
-                "title": "Frame Loop",
-                "filename": "frame_loop"
-            }),
-        )
-        .await;
-        assert_eq!(created.0, StatusCode::CREATED);
-        assert_eq!(created.1["filename"], "frame_loop.md");
-        let explanation = project.path().join("src/engine/explanations/frame_loop.md");
-        assert_eq!(fs::read_to_string(&explanation).unwrap(), "# Frame Loop\n");
-
-        let conflict = json_request(
-            &app,
-            "PUT",
-            "/api/explanation?token=test-token&module=sample::engine&file=frame_loop.md",
-            serde_json::json!({
-                "content": "# Changed\n",
-                "revision": "stale"
-            }),
-        )
-        .await;
-        assert_eq!(conflict.0, StatusCode::CONFLICT);
-        assert_eq!(fs::read_to_string(&explanation).unwrap(), "# Frame Loop\n");
 
         let exploration = json_request(
             &app,
@@ -1199,13 +1005,30 @@ mod tests {
         .await;
         assert_eq!(exploration.0, StatusCode::CREATED);
         assert_eq!(exploration.1["filename"], "async_rendering.md");
-        let exploration_path = project
-            .path()
-            .join("src/engine/explorations/async_rendering.md");
+        let note = store.join("async_rendering.md");
+        assert_eq!(fs::read_to_string(&note).unwrap(), "# Async Rendering\n");
+
+        let workspace = json_request(
+            &app,
+            "GET",
+            "/api/workspace?token=test-token",
+            serde_json::Value::Null,
+        )
+        .await;
         assert_eq!(
-            fs::read_to_string(&exploration_path).unwrap(),
-            "# Async Rendering\n"
+            workspace.1["explorations"]["sample::engine"][0]["title"],
+            "Async Rendering"
         );
+
+        let conflict = json_request(
+            &app,
+            "PUT",
+            "/api/exploration?token=test-token&module=sample::engine&file=async_rendering.md",
+            serde_json::json!({ "content": "# Changed\n", "revision": "stale" }),
+        )
+        .await;
+        assert_eq!(conflict.0, StatusCode::CONFLICT);
+        assert_eq!(fs::read_to_string(&note).unwrap(), "# Async Rendering\n");
 
         let saved = json_request(
             &app,
@@ -1220,65 +1043,44 @@ mod tests {
         assert_eq!(saved.0, StatusCode::OK);
         assert_eq!(saved.1["title"], "Async Rendering");
 
+        let unknown_module = json_request(
+            &app,
+            "POST",
+            "/api/explorations?token=test-token",
+            serde_json::json!({ "module": "sample::missing", "title": "Notes", "filename": "notes" }),
+        )
+        .await;
+        assert_eq!(unknown_module.0, StatusCode::NOT_FOUND);
+
         let drawing = json_request(
             &app,
             "POST",
             "/api/drawings?token=test-token",
             serde_json::json!({
                 "module": "sample::engine",
-                "document": "frame_loop.md",
-                "kind": "explanation",
-                "name": "Request Flow"
-            }),
-        )
-        .await;
-        assert_eq!(drawing.0, StatusCode::CREATED);
-        assert_eq!(drawing.1["filename"], "request_flow.svg");
-        assert_eq!(
-            drawing.1["markdown"],
-            "![Request Flow](../../../.documenter/drawings/sample/engine/request_flow.svg)"
-        );
-        let drawing_path = project
-            .path()
-            .join(".documenter/drawings/sample/engine/request_flow.svg");
-        let svg = fs::read_to_string(drawing_path).unwrap();
-        assert!(has_embedded_scene(&svg));
-        assert!(has_opaque_white_background(&svg));
-
-        let exploration_drawing = json_request(
-            &app,
-            "POST",
-            "/api/drawings?token=test-token",
-            serde_json::json!({
-                "module": "sample::engine",
                 "document": "async_rendering.md",
-                "kind": "exploration",
                 "name": "Render Graph"
             }),
         )
         .await;
-        assert_eq!(exploration_drawing.0, StatusCode::CREATED);
-        assert_eq!(exploration_drawing.1["filename"], "render_graph.svg");
-        assert_eq!(
-            exploration_drawing.1["markdown"],
-            "![Render Graph](../../../.documenter/exploration_drawings/sample/engine/render_graph.svg)"
-        );
-        let exploration_drawing_path = project
-            .path()
-            .join(".documenter/exploration_drawings/sample/engine/render_graph.svg");
-        assert!(has_embedded_scene(
-            &fs::read_to_string(exploration_drawing_path).unwrap()
-        ));
+        assert_eq!(drawing.0, StatusCode::CREATED);
+        assert_eq!(drawing.1["filename"], "render_graph.svg");
+        assert_eq!(drawing.1["markdown"], "![Render Graph](render_graph.svg)");
+        let svg = fs::read_to_string(store.join("render_graph.svg")).unwrap();
+        assert!(has_embedded_scene(&svg));
+        assert!(has_opaque_white_background(&svg));
 
-        let loaded_exploration_drawing = json_request(
+        let loaded = json_request(
             &app,
             "GET",
-            "/api/drawing?token=test-token&module=sample::engine&file=render_graph.svg&kind=exploration",
+            "/api/drawing?token=test-token&module=sample::engine&file=render_graph.svg",
             serde_json::Value::Null,
         )
         .await;
-        assert_eq!(loaded_exploration_drawing.0, StatusCode::OK);
-        assert_eq!(loaded_exploration_drawing.1["filename"], "render_graph.svg");
+        assert_eq!(loaded.0, StatusCode::OK);
+        assert_eq!(loaded.1["filename"], "render_graph.svg");
+        assert!(!project.path().join("src/engine").exists());
+        assert!(!project.path().join(".documenter").exists());
     }
 
     #[tokio::test]
@@ -1517,6 +1319,7 @@ mod tests {
             scheduled_refresh: StdMutex::new(None),
             rust_analyzer: RustAnalyzer::new(root.clone()),
             settings: SettingsStore::at(Some(root.join("target/test-settings.json"))),
+            explorations: Explorations::at(root.join("target/test-explorations")).unwrap(),
         }))
     }
 

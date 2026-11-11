@@ -4,7 +4,6 @@ import { flushSync } from "react-dom";
 import { api, routes } from "./api.js";
 import Markdown from "./Markdown.jsx";
 import { indentMarkdown } from "./markdownIndent.js";
-import { markdownResource } from "./resources.js";
 
 function DrawingDialog({ onClose, onCreate, busy, error }) {
   const [name, setName] = useState("");
@@ -29,8 +28,8 @@ function DrawingDialog({ onClose, onCreate, busy, error }) {
     </div>
   );
 }
-export default function MarkdownPage({ kind, moduleId, filename, workspaceRevision }) {
-  const resource = markdownResource(kind);
+// An exploration note: Markdown with embedded drawings, edited in Source or Preview mode.
+export default function MarkdownPage({ moduleId, filename, workspaceRevision }) {
   const [document, setDocument] = useState(null);
   const [content, setContent] = useState("");
   const [mode, setMode] = useState("preview");
@@ -47,7 +46,7 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
   const load = useCallback(async () => {
     setError("");
     try {
-      const loaded = await api(resource.memberApi, {}, { module: moduleId, file: filename });
+      const loaded = await api("/api/exploration", {}, { module: moduleId, file: filename });
       setDocument(loaded);
       setContent(loaded.content);
       setDirty(false);
@@ -59,7 +58,7 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
       setStatus("Load failed");
       return null;
     }
-  }, [moduleId, filename, resource]);
+  }, [moduleId, filename]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -77,7 +76,7 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
     setError("");
     try {
       const saved = await api(
-        resource.memberApi,
+        "/api/exploration",
         {
           method: "PUT",
           body: JSON.stringify({ content: nextContent, revision }),
@@ -95,7 +94,7 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
       setStatus(reason.status === 409 ? "Conflict" : "Save failed");
       return null;
     }
-  }, [content, document, moduleId, filename, resource]);
+  }, [content, document, moduleId, filename]);
 
   useEffect(() => {
     const keydown = (event) => {
@@ -133,7 +132,7 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
     try {
       const drawing = await api("/api/drawings", {
         method: "POST",
-        body: JSON.stringify({ module: moduleId, document: filename, kind, name }),
+        body: JSON.stringify({ module: moduleId, document: filename, name }),
       });
       const textarea = editorRef.current;
       const position = textarea?.selectionStart ?? content.length;
@@ -144,11 +143,7 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
       const next = `${before}${prefix}${drawing.markdown}${suffix}${after}`;
       const withDrawing = await saveContent(next, saved.revision);
       if (!withDrawing) throw new Error("Drawing was created, but its Markdown link could not be saved.");
-      window.location.assign(routes.drawing(moduleId, drawing.filename, {
-        from: filename,
-        kind,
-        drawingKind: kind,
-      }));
+      window.location.assign(routes.drawing(moduleId, drawing.filename, { from: filename }));
     } catch (reason) {
       setDrawingError(reason.message);
       setDrawingBusy(false);
@@ -156,16 +151,16 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
   }
 
   if (!document && error) {
-    return <main className="centered-state"><h1>{resource.label[0].toUpperCase() + resource.label.slice(1)} unavailable</h1><p>{error}</p></main>;
+    return <main className="centered-state"><h1>Exploration unavailable</h1><p>{error}</p></main>;
   }
-  if (!document) return <main className="centered-state"><p>Loading {resource.label}…</p></main>;
+  if (!document) return <main className="centered-state"><p>Loading exploration…</p></main>;
 
   return (
     <main className="editor-page">
       <header className="topbar editor-toolbar">
         <a className="brand" href={routes.graph()}>documenter</a>
         <a className="back-link" href={routes.module(moduleId)}>← {moduleId}</a>
-        <div className="mode-toggle" aria-label={`${resource.label} mode`}>
+        <div className="mode-toggle" aria-label="exploration mode">
           <button className={mode === "source" ? "active" : ""} type="button" onClick={() => setMode("source")}>Source</button>
           <button className={mode === "preview" ? "active" : ""} type="button" onClick={() => setMode("preview")}>Preview</button>
         </div>
@@ -175,7 +170,7 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
       </header>
       {externalChange && (
         <div className="conflict-banner">
-          This {resource.label} changed outside this editor.
+          This exploration changed outside this editor.
           <button type="button" onClick={load}>Discard local edits and reload</button>
         </div>
       )}
@@ -202,7 +197,7 @@ export default function MarkdownPage({ kind, moduleId, filename, workspaceRevisi
         />
       ) : (
         <div className="preview-shell">
-          <Markdown module={moduleId} document={filename} kind={kind}>{content}</Markdown>
+          <Markdown module={moduleId} document={filename}>{content}</Markdown>
         </div>
       )}
       {drawingDialog && (
