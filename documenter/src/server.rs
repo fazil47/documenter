@@ -984,10 +984,9 @@ mod tests {
         let project = sample_project();
         let app = test_router(project.path());
         let root = project.path().canonicalize().unwrap();
-        let store = root
-            .join("target/test-notes")
-            .join(root.to_string_lossy().replace(['/', '\\', ':'], "-"))
-            .join("sample/engine");
+        let store = crate::notes::Notes::at(root.join("target/test-notes"), &root)
+            .unwrap()
+            .folder("sample::engine");
 
         let unauthorized = app
             .clone()

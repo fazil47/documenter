@@ -59,15 +59,12 @@ impl Notes {
     }
 
     /// Notes for `workspace_root` under `base`, in a folder named after the
-    /// workspace's absolute path with its separators as dashes.
+    /// workspace's absolute path (see `folder_name`).
     pub(crate) fn at(base: PathBuf, workspace_root: &Path) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&base).with_context(|| format!("creating {}", base.display()))?;
         let base = base.canonicalize()?;
-        let workspace = workspace_root
-            .to_string_lossy()
-            .replace(['/', '\\', ':'], "-");
         Ok(Self {
-            root: base.join(workspace),
+            root: base.join(folder_name(workspace_root)),
             base,
         })
     }
@@ -180,6 +177,23 @@ impl Notes {
     }
 }
 
+/// A workspace's folder name: its path with each `/` as `-`, and `%`, `-`, `\`,
+/// `:` and `?` percent-encoded, so `/a/b-c` and `/a/b/c` get different folders
+/// and Windows paths such as `\\?\C:\x` make valid names.
+fn folder_name(workspace_root: &Path) -> String {
+    let mut name = String::new();
+    for character in workspace_root.to_string_lossy().chars() {
+        match character {
+            '/' => name.push('-'),
+            '%' | '-' | '\\' | ':' | '?' => {
+                name.push_str(&format!("%{:02X}", u32::from(character)))
+            }
+            other => name.push(other),
+        }
+    }
+    name
+}
+
 /// A note's first `# ` heading, or its filename.
 pub(crate) fn note_title(content: &str, path: &Path) -> String {
     content
@@ -231,6 +245,27 @@ mod tests {
     use super::*;
 
     proptest! {
+        /// Folder names can be read back as the path they came from, so no two
+        /// workspaces share one, and they are a single path component.
+        #[test]
+        fn names_each_workspace_folder_uniquely(path in "[a-cé/\\\\:?%-]{0,12}") {
+            let name = folder_name(Path::new(&path));
+            prop_assert_eq!(Path::new(&name).components().count(), usize::from(!name.is_empty()));
+            let mut decoded = String::new();
+            let mut characters = name.chars();
+            while let Some(character) = characters.next() {
+                match character {
+                    '-' => decoded.push('/'),
+                    '%' => {
+                        let code = characters.by_ref().take(2).collect::<String>();
+                        decoded.push(char::from_u32(u32::from_str_radix(&code, 16).unwrap()).unwrap());
+                    }
+                    other => decoded.push(other),
+                }
+            }
+            prop_assert_eq!(decoded, path);
+        }
+
         /// Whatever is typed as a name, an accepted one is a single plain file
         /// name with the extension, so it cannot leave the module's folder, and
         /// accepting it again changes nothing.
