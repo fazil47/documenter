@@ -31,11 +31,12 @@ const NAVIGATION_LABELS = {
   references: "references",
 };
 
-// The selection to restore on load: a goto target from another module, or the
-// selection this history entry had when a jump left it.
+// The selection to focus the editor on at load: a goto target from another
+// module, the selection this history entry had when a jump left it, or the start.
 function arrivalTarget() {
   const params = new URLSearchParams(window.location.search);
-  if (!params.has("line")) return window.history.state?.helixSelection;
+  const start = { line: 0, character: 0 };
+  if (!params.has("line")) return window.history.state?.helixSelection ?? { start, end: start };
   const number = (name, fallback) => Number(params.get(name) ?? fallback) || 0;
   return {
     start: { line: number("line"), character: number("character") },
