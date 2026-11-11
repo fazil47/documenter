@@ -613,3 +613,68 @@ fn crate_name(id: &str) -> &str {
 fn module_name(id: &str) -> String {
     id.rsplit("::").next().unwrap_or(id).to_owned()
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::*;
+
+    /// A crate `c`'s modules, every ancestor included, as segment lists.
+    fn module_tree() -> impl Strategy<Value = Vec<Vec<String>>> {
+        let names = prop::sample::select(vec!["a", "b", "c"]);
+        prop::collection::vec(prop::collection::vec(names, 1..=3), 1..6).prop_map(|paths| {
+            let mut modules = BTreeSet::from([vec!["c".to_owned()]]);
+            for path in paths {
+                for length in 1..=path.len() {
+                    let mut module = vec!["c".to_owned()];
+                    module.extend(path[..length].iter().map(|name| (*name).to_owned()));
+                    modules.insert(module);
+                }
+            }
+            modules.into_iter().collect()
+        })
+    }
+
+    proptest! {
+        /// However a module is spelled from another one, an item in it
+        /// resolves to it: `crate::` paths, `super::` and `self::` paths, and
+        /// paths through a child module.
+        #[test]
+        fn resolves_every_spelling_of_a_path(
+            modules in module_tree(),
+            source in any::<prop::sample::Index>(),
+            target in any::<prop::sample::Index>(),
+        ) {
+            let source = &modules[source.index(modules.len())];
+            let target = &modules[target.index(modules.len())];
+            let local = modules.iter().map(|module| module.join("::")).collect::<HashSet<_>>();
+            let roots = HashSet::from(["c".to_owned()]);
+            let resolve = |path: Vec<String>| {
+                resolve_use(&source.join("::"), &path, &local, &HashMap::new(), &roots)
+            };
+            let item = |mut path: Vec<String>| {
+                path.push("Item".to_owned());
+                path
+            };
+            let expected = Some(target.join("::"));
+
+            let mut absolute = vec!["crate".to_owned()];
+            absolute.extend(target[1..].iter().cloned());
+            prop_assert_eq!(resolve(item(absolute)), expected.clone(), "crate path");
+
+            let shared = source.iter().zip(target).take_while(|(left, right)| left == right).count();
+            let below = target[shared..].to_vec();
+            let relative = if shared == source.len() {
+                [vec!["self".to_owned()], below.clone()].concat()
+            } else {
+                [vec!["super".to_owned(); source.len() - shared], below.clone()].concat()
+            };
+            prop_assert_eq!(resolve(item(relative.clone())), expected.clone(), "{:?}", relative);
+
+            if shared == source.len() && !below.is_empty() {
+                prop_assert_eq!(resolve(item(below.clone())), expected, "{:?}", below);
+            }
+        }
+    }
+}

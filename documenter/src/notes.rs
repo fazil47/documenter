@@ -226,7 +226,25 @@ fn has_extension(path: &Path, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+
+    proptest! {
+        /// Whatever is typed as a name, an accepted one is a single plain file
+        /// name with the extension, so it cannot leave the module's folder, and
+        /// accepting it again changes nothing.
+        #[test]
+        fn accepts_only_plain_file_names(name in "[a-zA-Z0-9_./\\\\ -]{0,12}(\\.md)?") {
+            if let Ok(accepted) = plain_name(&name, "md", NOTE_NAME) {
+                let stem = accepted.strip_suffix(".md").unwrap();
+                prop_assert!(!stem.is_empty());
+                prop_assert!(stem.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-')));
+                prop_assert_eq!(Path::new(&accepted).components().count(), 1);
+                prop_assert_eq!(plain_name(&accepted, "md", NOTE_NAME).ok(), Some(accepted.clone()));
+            }
+        }
+    }
 
     #[test]
     fn keeps_notes_and_drawings_per_workspace_and_module() {

@@ -144,18 +144,19 @@ pub(super) fn active(cfg: &CfgSet, attributes: &[Attribute]) -> bool {
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+    use serde_json::{Value, json};
 
     use super::*;
+    use crate::analysis::lean_oracle;
 
     const FLAGS: [&str; 3] = ["unix", "test", "debug_assertions"];
     const KEYS: [&str; 2] = ["target_os", "feature"];
     const VALUES: [&str; 3] = ["linux", "macos", "std"];
 
-    /// A `cfg` predicate with the meaning Rust gives it, written as attribute syntax.
     #[derive(Debug, Clone)]
     enum Predicate {
-        Flag(usize),
-        Pair(usize, usize),
+        Flag(&'static str),
+        Pair(&'static str, &'static str),
         Bool(bool),
         All(Vec<Predicate>),
         Any(Vec<Predicate>),
@@ -163,14 +164,15 @@ mod tests {
     }
 
     impl Predicate {
+        /// As written in a `#[cfg(...)]` attribute.
         fn render(&self) -> String {
             let list = |name: &str, items: &[Predicate]| {
                 let items = items.iter().map(Self::render).collect::<Vec<_>>();
                 format!("{name}({})", items.join(", "))
             };
             match self {
-                Self::Flag(flag) => FLAGS[*flag].to_owned(),
-                Self::Pair(key, value) => format!("{} = \"{}\"", KEYS[*key], VALUES[*value]),
+                Self::Flag(flag) => (*flag).to_owned(),
+                Self::Pair(key, value) => format!("{key} = \"{value}\""),
                 Self::Bool(value) => value.to_string(),
                 Self::All(items) => list("all", items),
                 Self::Any(items) => list("any", items),
@@ -178,22 +180,28 @@ mod tests {
             }
         }
 
-        fn holds(&self, flags: &[bool; 3], pairs: &[[bool; 3]; 2]) -> bool {
+        /// As the Lean oracle reads it.
+        fn to_json(&self) -> Value {
+            let list = |items: &[Predicate]| items.iter().map(Self::to_json).collect::<Value>();
             match self {
-                Self::Flag(flag) => flags[*flag],
-                Self::Pair(key, value) => pairs[*key][*value],
-                Self::Bool(value) => *value,
-                Self::All(items) => items.iter().all(|item| item.holds(flags, pairs)),
-                Self::Any(items) => items.iter().any(|item| item.holds(flags, pairs)),
-                Self::Not(item) => !item.holds(flags, pairs),
+                Self::Flag(flag) => json!({ "flag": flag }),
+                Self::Pair(key, value) => json!({ "pair": [key, value] }),
+                Self::Bool(value) => json!({ "bool": value }),
+                Self::All(items) => json!({ "all": list(items) }),
+                Self::Any(items) => json!({ "any": list(items) }),
+                Self::Not(item) => json!({ "not": item.to_json() }),
             }
         }
     }
 
     fn predicate() -> impl Strategy<Value = Predicate> {
         let leaf = prop_oneof![
-            (0..FLAGS.len()).prop_map(Predicate::Flag),
-            (0..KEYS.len(), 0..VALUES.len()).prop_map(|(key, value)| Predicate::Pair(key, value)),
+            prop::sample::select(&FLAGS[..]).prop_map(Predicate::Flag),
+            (
+                prop::sample::select(&KEYS[..]),
+                prop::sample::select(&VALUES[..])
+            )
+                .prop_map(|(key, value)| Predicate::Pair(key, value)),
             any::<bool>().prop_map(Predicate::Bool),
         ];
         leaf.prop_recursive(4, 24, 4, |inner| {
@@ -205,30 +213,45 @@ mod tests {
         })
     }
 
+    fn configuration()
+    -> impl Strategy<Value = (Vec<&'static str>, Vec<(&'static str, &'static str)>)> {
+        let pairs = (
+            prop::sample::select(&KEYS[..]),
+            prop::sample::select(&VALUES[..]),
+        );
+        (
+            prop::sample::subsequence(&FLAGS[..], 0..=FLAGS.len()),
+            prop::collection::vec(pairs, 0..4),
+        )
+    }
+
     proptest! {
-        /// Parsing a written predicate and evaluating it agrees with what it means.
+        /// Parsing a written predicate and evaluating it agrees with what the
+        /// Lean oracle (`cfg/oracle/Cfg.lean`) says it means.
         #[test]
-        fn evaluates_predicates_as_rust_does(
+        fn evaluates_predicates_as_the_oracle_does(
             predicate in predicate(),
-            flags in any::<[bool; 3]>(),
-            pairs in any::<[[bool; 3]; 2]>(),
+            (flags, pairs) in configuration(),
         ) {
-            let set = CfgSet {
-                flags: (0..FLAGS.len())
-                    .filter(|&flag| flags[flag])
-                    .map(|flag| FLAGS[flag].to_owned())
-                    .collect(),
-                pairs: (0..KEYS.len())
-                    .map(|key| {
-                        let values = (0..VALUES.len()).filter(|&value| pairs[key][value]);
-                        (KEYS[key].to_owned(), values.map(|value| VALUES[value].to_owned()).collect())
-                    })
-                    .collect(),
-            };
             let written = predicate.render();
             let parsed = syn::parse_str::<ParsedCfg>(&written);
             prop_assert!(parsed.is_ok(), "`{}` did not parse", written);
-            prop_assert_eq!(set.eval(&parsed.unwrap().0), predicate.holds(&flags, &pairs), "for `{}`", written);
+            let set = CfgSet {
+                flags: flags.iter().map(|flag| (*flag).to_owned()).collect(),
+                pairs: pairs.iter().fold(HashMap::new(), |mut set: HashMap<String, HashSet<String>>, (key, value)| {
+                    set.entry((*key).to_owned()).or_default().insert((*value).to_owned());
+                    set
+                }),
+            };
+            let query = json!({
+                "query": "cfg",
+                "flags": flags,
+                "pairs": pairs.iter().map(|(key, value)| [key, value]).collect::<Vec<_>>(),
+                "predicate": predicate.to_json(),
+            });
+            if let Some(answer) = lean_oracle::ask(&query) {
+                prop_assert_eq!(set.eval(&parsed.unwrap().0), answer["holds"] == true, "for `{}`", written);
+            }
         }
     }
 }

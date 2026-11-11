@@ -2,6 +2,8 @@
 
 mod cargo;
 mod cfg;
+#[cfg(test)]
+mod lean_oracle;
 mod model;
 mod rust;
 mod settings;
@@ -185,11 +187,136 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
 
+    use proptest::prelude::*;
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::*;
+
+    /// A workspace of in-memory modules: a crate `c` and its descendants, with
+    /// edges between them.
+    fn graph() -> impl Strategy<Value = Workspace> {
+        let names = prop::sample::select(vec!["a", "b", "c"]);
+        let paths = prop::collection::vec(prop::collection::vec(names, 1..=3), 0..8);
+        paths
+            .prop_map(|paths| {
+                let mut ids = BTreeSet::from(["c".to_owned()]);
+                for path in paths {
+                    // Every ancestor of a module is a module too.
+                    for length in 1..=path.len() {
+                        ids.insert(format!("c::{}", path[..length].join("::")));
+                    }
+                }
+                ids.into_iter().collect::<Vec<_>>()
+            })
+            .prop_flat_map(|ids| {
+                let count = ids.len();
+                let edges = prop::collection::vec((0..count, 0..count), 0..count * 2);
+                (Just(ids), edges)
+            })
+            .prop_map(|(ids, edges)| {
+                let edges = edges
+                    .into_iter()
+                    .filter(|(source, target)| source != target)
+                    .map(|(source, target)| Edge {
+                        source: ids[source].clone(),
+                        target: ids[target].clone(),
+                    })
+                    .collect::<BTreeSet<_>>();
+                Workspace {
+                    root: PathBuf::new(),
+                    modules: ids
+                        .iter()
+                        .map(|id| Module {
+                            id: id.clone(),
+                            crate_name: "c".to_owned(),
+                            name: id.rsplit("::").next().unwrap_or(id).to_owned(),
+                            docs: String::new(),
+                            folded: false,
+                            items: Vec::new(),
+                            source_path: None,
+                        })
+                        .collect(),
+                    edges: edges.into_iter().collect(),
+                    warnings: Vec::new(),
+                }
+            })
+    }
+
+    /// Asks the Lean oracle (`analysis/oracle/Workspace.lean`) about `workspace`.
+    fn oracle(workspace: &Workspace, query: Value) -> Option<Value> {
+        let mut query = query;
+        query["modules"] = json!(workspace.module_ids().collect::<Vec<_>>());
+        query["edges"] = workspace
+            .edges
+            .iter()
+            .map(|edge| json!([edge.source, edge.target]))
+            .collect();
+        lean_oracle::ask(&query)
+    }
+
+    /// Two module ids of `workspace`, chosen by `picks`.
+    fn pick<'a>(workspace: &'a Workspace, pick: prop::sample::Index) -> &'a str {
+        &workspace.modules[pick.index(workspace.modules.len())].id
+    }
+
+    proptest! {
+        /// A dependency path exists exactly when the oracle finds one; it is as
+        /// short as the oracle's and follows edges from `from` to `to`.
+        #[test]
+        fn finds_shortest_dependency_paths(
+            workspace in graph(),
+            from in any::<prop::sample::Index>(),
+            to in any::<prop::sample::Index>(),
+        ) {
+            let (from, to) = (pick(&workspace, from), pick(&workspace, to));
+            let found = workspace.dependency_path(from, to);
+            let Some(answer) = oracle(&workspace, json!({ "query": "dependency_path", "from": from, "to": to })) else {
+                return Ok(());
+            };
+            prop_assert_eq!(found.is_some(), !answer["path"].is_null());
+            if let Some(path) = found {
+                prop_assert_eq!(path.len(), answer["path"].as_array().unwrap().len());
+                prop_assert_eq!((path[0], path[path.len() - 1]), (from, to));
+                for step in path.windows(2) {
+                    prop_assert!(workspace.uses(step[0]).contains(&step[1]), "{:?} is not an edge", step);
+                }
+            }
+        }
+
+        /// Children are the modules exactly one segment below a module.
+        #[test]
+        fn lists_children_as_the_oracle_does(workspace in graph(), parent in any::<prop::sample::Index>()) {
+            let parent = pick(&workspace, parent);
+            if let Some(answer) = oracle(&workspace, json!({ "query": "children", "parent": parent })) {
+                prop_assert_eq!(json!(workspace.children(parent)), answer["children"].clone());
+            }
+        }
+
+        /// Names resolve as the oracle says: full ids, unique `::` suffixes,
+        /// optionally after `crate::`, and otherwise the candidates.
+        #[test]
+        fn resolves_names_as_the_oracle_does(
+            workspace in graph(),
+            module in any::<prop::sample::Index>(),
+            drop in 0usize..3,
+            crate_prefix in any::<bool>(),
+        ) {
+            let segments = pick(&workspace, module).split("::").collect::<Vec<_>>();
+            let suffix = segments[drop.min(segments.len() - 1)..].join("::");
+            let name = if crate_prefix { format!("crate::{suffix}") } else { suffix };
+            let resolved = match workspace.resolve(&name) {
+                Ok(id) => json!({ "found": id }),
+                Err(candidates) => json!({ "candidates": candidates }),
+            };
+            if let Some(answer) = oracle(&workspace, json!({ "query": "resolve", "name": name })) {
+                prop_assert_eq!(resolved, answer, "resolving `{}`", name);
+            }
+        }
+    }
 
     #[test]
     fn discovers_file_and_inline_modules_with_their_docs() {
