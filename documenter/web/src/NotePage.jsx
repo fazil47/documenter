@@ -29,11 +29,12 @@ function DrawingDialog({ onClose, onCreate, busy, error }) {
   );
 }
 // A note: Markdown with embedded drawings, edited in Source or Preview mode.
+// Saving and reloading follow the protocol in `src/server/quint/note_saving.qnt`,
+// which checks that no edit is lost and no outside change is reported falsely.
 export default function NotePage({ moduleId, filename, workspaceRevision }) {
-  const [document, setDocument] = useState(null);
-  const [content, setContent] = useState("");
+  const [document, setDocumentState] = useState(null);
+  const [content, setContentState] = useState("");
   const [mode, setMode] = useState("preview");
-  const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState("Loading…");
   const [error, setError] = useState("");
   const [externalChange, setExternalChange] = useState(false);
@@ -42,50 +43,94 @@ export default function NotePage({ moduleId, filename, workspaceRevision }) {
   const [drawingError, setDrawingError] = useState("");
   const editorRef = useRef(null);
   const seenWorkspaceRevision = useRef(workspaceRevision);
+  // Current values for requests that finish after a render: the note as last
+  // loaded or saved, the editor's text, the save in flight, and a count of saves.
+  const documentRef = useRef(null);
+  const contentRef = useRef("");
+  const saving = useRef(null);
+  const saves = useRef(0);
+  const dirty = document !== null && content !== document.content;
 
-  const load = useCallback(async () => {
-    setError("");
-    try {
-      const loaded = await api("/api/note", {}, { module: moduleId, file: filename });
-      setDocument(loaded);
-      setContent(loaded.content);
-      setDirty(false);
-      setExternalChange(false);
-      setStatus("Saved");
-      return loaded;
-    } catch (reason) {
+  const setDocument = useCallback((value) => {
+    documentRef.current = value;
+    setDocumentState(value);
+  }, []);
+  const setContent = useCallback((value) => {
+    contentRef.current = value;
+    setContentState(value);
+  }, []);
+  const show = useCallback((loaded) => {
+    setDocument(loaded);
+    setContent(loaded.content);
+    setExternalChange(false);
+    setStatus("Saved");
+  }, [setDocument, setContent]);
+  const fetchNote = useCallback(
+    () => api("/api/note", {}, { module: moduleId, file: filename }),
+    [moduleId, filename],
+  );
+
+  useEffect(() => {
+    fetchNote().then(show, (reason) => {
       setError(reason.message);
       setStatus("Load failed");
-      return null;
-    }
-  }, [moduleId, filename]);
+    });
+  }, [fetchNote, show]);
 
-  useEffect(() => { load(); }, [load]);
+  // After a change notification, which may be for this page's own save. Waits
+  // for any save in flight and fetches again if one happens meanwhile; then
+  // shows the note if it changed and the editor has no unsaved edits, or warns.
+  const refresh = useCallback(async () => {
+    for (;;) {
+      await saving.current;
+      const before = saves.current;
+      let loaded;
+      try {
+        loaded = await fetchNote();
+      } catch {
+        return;
+      }
+      if (saving.current || saves.current !== before) continue;
+      const current = documentRef.current;
+      if (loaded.revision === current.revision) return;
+      if (contentRef.current === current.content) show(loaded);
+      else setExternalChange(true);
+      return;
+    }
+  }, [fetchNote, show]);
 
   useEffect(() => {
     if (seenWorkspaceRevision.current === workspaceRevision) return;
     seenWorkspaceRevision.current = workspaceRevision;
-    if (!document) return;
-    if (dirty) setExternalChange(true);
-    else load();
-  }, [workspaceRevision, dirty, document, load]);
+    if (documentRef.current) refresh();
+  }, [workspaceRevision, refresh]);
 
-  const saveContent = useCallback(async (nextContent = content, revision = document?.revision) => {
-    if (!document || !revision) return null;
+  // Drops unsaved edits at once, so anything typed while the note reloads is kept.
+  function discard() {
+    setContent(documentRef.current.content);
+    setExternalChange(false);
+    refresh();
+  }
+
+  const saveContent = useCallback(async (nextContent = contentRef.current, revision = documentRef.current?.revision) => {
+    if (!documentRef.current || !revision || saving.current) return null;
+    const sentFrom = contentRef.current;
     setStatus("Saving…");
     setError("");
+    const request = api(
+      "/api/note",
+      {
+        method: "PUT",
+        body: JSON.stringify({ content: nextContent, revision }),
+      },
+      { module: moduleId, file: filename },
+    );
+    saving.current = request.catch(() => {});
     try {
-      const saved = await api(
-        "/api/note",
-        {
-          method: "PUT",
-          body: JSON.stringify({ content: nextContent, revision }),
-        },
-        { module: moduleId, file: filename },
-      );
+      const saved = await request;
       setDocument(saved);
-      setContent(saved.content);
-      setDirty(false);
+      // Keep anything typed while saving; a save of other text (adding a drawing) shows it.
+      if (contentRef.current === sentFrom) setContent(saved.content);
       setExternalChange(false);
       setStatus("Saved");
       return saved;
@@ -93,8 +138,11 @@ export default function NotePage({ moduleId, filename, workspaceRevision }) {
       setError(reason.message);
       setStatus(reason.status === 409 ? "Conflict" : "Save failed");
       return null;
+    } finally {
+      saving.current = null;
+      saves.current += 1;
     }
-  }, [content, document, moduleId, filename]);
+  }, [moduleId, filename, setDocument, setContent]);
 
   useEffect(() => {
     const keydown = (event) => {
@@ -171,7 +219,7 @@ export default function NotePage({ moduleId, filename, workspaceRevision }) {
       {externalChange && (
         <div className="conflict-banner">
           This note changed outside this editor.
-          <button type="button" onClick={load}>Discard local edits and reload</button>
+          <button type="button" onClick={discard}>Discard local edits and reload</button>
         </div>
       )}
       {mode === "source" ? (
@@ -179,17 +227,14 @@ export default function NotePage({ moduleId, filename, workspaceRevision }) {
           ref={editorRef}
           className="markdown-editor"
           value={content}
-          onChange={(event) => { setContent(event.target.value); setDirty(event.target.value !== document.content); }}
+          onChange={(event) => setContent(event.target.value)}
           onKeyDown={(event) => {
             if (event.key !== "Tab" || event.altKey || event.ctrlKey || event.metaKey || event.nativeEvent.isComposing) return;
             event.preventDefault();
             const editor = event.currentTarget;
             const direction = editor.selectionDirection;
             const next = indentMarkdown(editor.value, editor.selectionStart, editor.selectionEnd, event.shiftKey);
-            flushSync(() => {
-              setContent(next.value);
-              setDirty(next.value !== document.content);
-            });
+            flushSync(() => setContent(next.value));
             editor.setSelectionRange(next.start, next.end, direction);
           }}
           spellCheck="true"
