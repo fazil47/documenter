@@ -1,0 +1,1 @@
+import{t as e}from"./index-B89BQCrH.js";var t={rust:()=>e(()=>import(`./rust-DpiIf5JO.js`),[]),javascript:()=>e(()=>import(`./javascript-BgS3c2Ky.js`),[]),jsx:()=>e(()=>import(`./jsx-Bz0zcwM4.js`),[]),typescript:()=>e(()=>import(`./typescript-bsJCZSQ-.js`),[]),tsx:()=>e(()=>import(`./tsx-udAQXfEw.js`),[])};export{t as bundledLanguages};

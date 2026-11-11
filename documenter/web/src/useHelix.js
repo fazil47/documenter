@@ -128,10 +128,27 @@ function loadGrammar(key) {
   return loaded[key];
 }
 
+// Scrolls `container` vertically only, so the line lands where `block` says, as
+// `scrollIntoView` would; that would also scroll the code sideways to the
+// line's start, undoing the reader's horizontal scroll.
 function scrollToLine(container, line, block) {
   // The first line also reveals the file header above it.
-  if (line === 0 && block !== "end") container.scrollTo({ top: 0 });
-  else lineElements(container)[line]?.scrollIntoView({ block });
+  if (line === 0 && block !== "end") {
+    container.scrollTo({ top: 0 });
+    return;
+  }
+  const element = lineElements(container)[line];
+  if (!element) return;
+  const box = element.getBoundingClientRect();
+  const top = box.top - container.getBoundingClientRect().top - container.clientTop;
+  const room = container.clientHeight - box.height;
+  const shift = {
+    start: top,
+    center: top - room / 2,
+    end: top - room,
+    nearest: top < 0 ? top : Math.max(0, top - room),
+  }[block];
+  if (shift) container.scrollBy({ top: shift });
 }
 
 // Drives a Pierre editor with Helix keys while `enabled`. Returns the status line
