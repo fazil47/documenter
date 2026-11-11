@@ -87,7 +87,7 @@ fn leading_comment(source: &str) -> String {
         .join("\n")
 }
 
-/// The modules a Lean file imports, such as `analysis.model.oracle.Graph`.
+/// The modules a Lean file imports, such as `analysis.oracle.Graph`.
 fn lean_imports(source: &str) -> Vec<String> {
     source
         .lines()

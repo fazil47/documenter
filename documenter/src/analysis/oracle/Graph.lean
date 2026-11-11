@@ -1,9 +1,9 @@
 /-!
 # Module graphs
 
-A workspace's modules and the dependency edges between them, as
-`documenter::analysis::model` holds them: an edge `(source, target)` means
-`source` uses `target`.
+A workspace's modules and the dependency edges between them, the vocabulary
+of the `Workspace` queries: an edge `(source, target)` means `source` uses
+`target`.
 -/
 
 namespace Model

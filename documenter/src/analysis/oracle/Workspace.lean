@@ -1,4 +1,4 @@
-import analysis.model.oracle.Graph
+import analysis.oracle.Graph
 
 /-!
 # Workspace queries
