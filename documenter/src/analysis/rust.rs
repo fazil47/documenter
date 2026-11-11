@@ -11,7 +11,7 @@ use syn::{
 
 use super::cargo::Package;
 use super::cfg::{self, CfgSet};
-use super::{ApiItem, Edge, Module, summary};
+use super::model::{ApiItem, Edge, Module, summary};
 
 pub(super) struct Analysis {
     pub(super) modules: Vec<Module>,

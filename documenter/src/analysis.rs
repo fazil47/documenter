@@ -2,6 +2,7 @@
 
 mod cargo;
 mod cfg;
+mod model;
 mod rust;
 mod settings;
 
@@ -11,6 +12,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Serialize;
 
+use self::model::{ApiItem, Edge, Module, summary};
+
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Workspace {
     #[serde(skip)]
@@ -18,54 +21,6 @@ pub(crate) struct Workspace {
     modules: Vec<Module>,
     edges: Vec<Edge>,
     warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct Module {
-    id: String,
-    crate_name: String,
-    name: String,
-    docs: String,
-    folded: bool,
-    items: Vec<ApiItem>,
-    #[serde(rename = "file_backed", serialize_with = "serialize_is_some")]
-    source_path: Option<PathBuf>,
-}
-
-/// An item a module makes visible outside itself, such as `pub(crate) fn load`.
-/// It displays as its declaration, like `pub(crate) fn Workspace::load`.
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct ApiItem {
-    visibility: String,
-    kind: &'static str,
-    /// A method is named `Type::method`; a re-export by its path.
-    name: String,
-    /// Where its name is, in the module's file.
-    line: usize,
-    summary: String,
-}
-
-impl ApiItem {
-    pub(crate) fn line(&self) -> usize {
-        self.line
-    }
-
-    /// The first paragraph of its docs.
-    pub(crate) fn summary(&self) -> &str {
-        &self.summary
-    }
-}
-
-impl std::fmt::Display for ApiItem {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{} {} {}", self.visibility, self.kind, self.name)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-struct Edge {
-    source: String,
-    target: String,
 }
 
 impl Workspace {
@@ -226,23 +181,6 @@ impl Workspace {
             .find(|module| module.source_path.as_deref() == Some(path.as_path()))
             .map(|module| module.id.as_str())
     }
-}
-
-/// The first paragraph of `docs` as one line.
-fn summary(docs: &str) -> String {
-    docs.lines()
-        .map(str::trim)
-        .skip_while(|line| line.is_empty())
-        .take_while(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn serialize_is_some<S: serde::Serializer>(
-    value: &Option<PathBuf>,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.serialize_bool(value.is_some())
 }
 
 #[cfg(test)]
