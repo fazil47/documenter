@@ -22,6 +22,7 @@
     "web-tree-sitter": "0.27.1"
   },
   "devDependencies": {
+    "@informalsystems/quint": "0.33.1",
     "@vitejs/plugin-react": "6.1.0",
     "vite": "8.2.4",
     "vitest": "4.1.12"

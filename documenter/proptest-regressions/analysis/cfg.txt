@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc da0dd3bbc1f2c01c5b1f72209177e1389ea8009fd9f8cb953022f3da63f08a8f # shrinks to predicate = Any([All([Bool(false)])]), flags = [false, false, false], pairs = [[false, false, false], [false, false, false]]
