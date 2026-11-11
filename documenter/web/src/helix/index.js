@@ -20,7 +20,8 @@ export class HelixState {
     return this.#engine.handleKey(key, snapshot, options);
   }
 
-  // Selects a navigation target in the current file, recording a jump unless `record` is false.
+  // Selects a navigation target in the current file, recording a jump unless
+  // `record` is false, and centring it in view (only if hidden, with `reveal: "centerIfHidden"`).
   jumpTo(target, snapshot, options) {
     return this.#engine.jumpTo(target, snapshot, options);
   }

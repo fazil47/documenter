@@ -380,6 +380,22 @@ describe("language server navigation", () => {
     expect(session.state).toBe("one\ntwo\n⟨three⟩\n");
     expect(session.keys("<C-o>").state).toBe("one\ntw⟨o⟩\nthree\n");
   });
+
+  it("centres goto targets, and jump-list targets and search matches when hidden, as Helix does", () => {
+    const helix = new Engine();
+    const text = "one\ntwo\nthree\n";
+    const snapshot = { text, selections: [{ start: { line: 0, character: 0 }, end: { line: 0, character: 1 }, direction: 1 }] };
+    const target = { start: { line: 2, character: 0 }, end: { line: 2, character: 5 } };
+    const jumped = helix.jumpTo(target, snapshot);
+    expect(jumped.reveal).toBe("center");
+    const back = helix.handleKey("C-o", { ...snapshot, selections: jumped.selections });
+    expect(back.reveal).toBe("centerIfHidden");
+    expect(helix.handleKey("j", snapshot).reveal).toBeUndefined();
+    expect(helix.jumpTo(target, snapshot, { reveal: "centerIfHidden" }).reveal).toBe("centerIfHidden");
+    const words = { text: "one\ntwo\none\n", selections: [{ start: { line: 0, character: 0 }, end: { line: 0, character: 3 }, direction: 1 }] };
+    helix.handleKey("*", words);
+    expect(helix.handleKey("n", words).reveal).toBe("centerIfHidden");
+  });
 });
 
 describe("command line", () => {

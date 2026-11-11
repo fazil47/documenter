@@ -43,6 +43,9 @@ export class Context {
     this.output = undefined;
     this.changeSet = undefined;
     this.commandRequest = undefined;
+    // How to scroll the new selection into view: "center" or "centerIfHidden"
+    // for jumps, or the nearest edge by default.
+    this.reveal = undefined;
   }
 
   select(ranges, primary = this.primary) {
@@ -510,6 +513,8 @@ export function searchMove(cx, pattern, backward) {
   cx.state.pushJump(cx);
   if (cx.extend) cx.select([...cx.ranges, match], cx.ranges.length);
   else cx.select(cx.ranges.map((range, position) => (position === cx.primary ? match : range)));
+  // Helix centres a search match that is out of view.
+  cx.reveal = "centerIfHidden";
 }
 
 function searchSelection(wordBoundaries) {

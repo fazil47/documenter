@@ -130,7 +130,8 @@ function loadGrammar(key) {
 
 // Scrolls `container` vertically only, so the line lands where `block` says, as
 // `scrollIntoView` would; that would also scroll the code sideways to the
-// line's start, undoing the reader's horizontal scroll.
+// line's start, undoing the reader's horizontal scroll. `centerIfHidden`
+// centres a line that is not fully in view.
 function scrollToLine(container, line, block) {
   // The first line also reveals the file header above it.
   if (line === 0 && block !== "end") {
@@ -142,11 +143,13 @@ function scrollToLine(container, line, block) {
   const box = element.getBoundingClientRect();
   const top = box.top - container.getBoundingClientRect().top - container.clientTop;
   const room = container.clientHeight - box.height;
+  const hidden = top < 0 || top > room;
   const shift = {
     start: top,
     center: top - room / 2,
     end: top - room,
     nearest: top < 0 ? top : Math.max(0, top - room),
+    centerIfHidden: hidden ? top - room / 2 : 0,
   }[block];
   if (shift) container.scrollBy({ top: shift });
 }
@@ -215,7 +218,7 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
         const primary = result.selections[result.selections.length - 1];
         const head = primary.direction === -1 ? primary.start : primary.end;
         const line = primary.direction === 1 && head.character === 0 ? head.line - 1 : head.line;
-        scrollToLine(container, Math.max(0, line), "nearest");
+        scrollToLine(container, Math.max(0, line), result.reveal ?? "nearest");
         // Accents and other compositions are drawn at the page's own caret, which
         // setViewState leaves behind; Pierre's focus moves it to the primary selection.
         target.focus({ preventScroll: true });

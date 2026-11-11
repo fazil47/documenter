@@ -76,11 +76,13 @@ export class Engine {
   }
 
   // Select `target` ({ start, end } positions) after a navigation, recording the jump.
-  jumpTo(target, snapshot, { record = true } = {}) {
+  // `reveal` is "center" for a goto, as in Helix, or "centerIfHidden" for a jump-list move.
+  jumpTo(target, snapshot, { record = true, reveal = "center" } = {}) {
     const text = new Text(snapshot.text);
     const cx = new Context(this, text, this.readSelection(text, snapshot.selections ?? []));
     if (record) this.pushJump(cx);
     cx.select([{ anchor: text.offsetAt(target.start), head: text.offsetAt(target.end) }], 0);
+    cx.reveal = reveal;
     return this.finish(cx, true);
   }
 
@@ -236,6 +238,7 @@ export class Engine {
       }));
     }
     if (cx.commandRequest) result.command = cx.commandRequest;
+    if (result.selections && cx.reveal) result.reveal = cx.reveal;
     if (!cx.keepGoals) this.goals = undefined;
     return { ...result, ...this.status(handled) };
   }
@@ -298,6 +301,8 @@ export class Engine {
     const target = this.jumps[this.jumpIndex];
     const clamp = (offset) => Math.min(offset, cx.text.length);
     cx.select(target.ranges.map((range) => ({ anchor: clamp(range.anchor), head: clamp(range.head) })), target.primary);
+    // Helix centres a jump's target only when it is out of view.
+    cx.reveal = "centerIfHidden";
   }
 
   // Goal columns survive only across consecutive vertical motions.

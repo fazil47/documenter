@@ -33,15 +33,21 @@ const NAVIGATION_LABELS = {
 
 // The selection to focus the editor on at load: a goto target from another
 // module, the selection this history entry had when a jump left it, or the start.
+// Where the page opens, and how to reveal it: a navigation target is centred,
+// as Helix centres a goto; a selection restored from history (C-o, C-i, or the
+// back button) only if it is out of view, as Helix's jump list does.
 function arrivalTarget() {
   const params = new URLSearchParams(window.location.search);
   const start = { line: 0, character: 0 };
-  if (!params.has("line")) return window.history.state?.helixSelection ?? { start, end: start };
+  if (!params.has("line")) {
+    return { target: window.history.state?.helixSelection ?? { start, end: start }, reveal: "centerIfHidden" };
+  }
   const number = (name, fallback) => Number(params.get(name) ?? fallback) || 0;
-  return {
+  const target = {
     start: { line: number("line"), character: number("character") },
     end: { line: number("endLine", params.get("line")), character: number("endCharacter", params.get("character")) },
   };
+  return { target, reveal: "center" };
 }
 
 // Jumps across modules live in browser history: each entry remembers its
@@ -394,9 +400,9 @@ export default function CodePage({ moduleId, testFile, workspaceRevision }) {
     // Pierre places its caret when focused, so select the target on the next frame.
     // Arriving is not a jump within this file, so C-o goes straight back to the previous one.
     const frame = requestAnimationFrame(() => {
-      const target = arrival.current;
+      const { target, reveal } = arrival.current;
       arrival.current = undefined;
-      if (helixEnabled) actions.jumpTo(target, { record: false });
+      if (helixEnabled) actions.jumpTo(target, { record: false, reveal });
       else editor.setViewState({ selections: [{ ...target, direction: 1 }] });
       const url = new URL(window.location.href);
       if (!url.searchParams.has("line")) return;
