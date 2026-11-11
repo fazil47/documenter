@@ -3,8 +3,8 @@
 `documenter` is an editor-agnostic Rust language server that opens a local,
 documentation-centric view of a codebase. Its web workspace combines an
 interactive module dependency graph, native Rust module documentation, the
-module source in an editor with optional Helix keybindings, and exploration
-notes with editable Excalidraw drawings.
+module source in an editor with optional Helix keybindings, and personal notes
+with editable Excalidraw drawings.
 
 ## Build
 
@@ -70,19 +70,20 @@ code actions menu (`Cmd+.` on macOS or `Ctrl+.` on Windows/Linux).
 
 ## Documentation layout
 
-Every module can have explorations: rough Markdown notes for sketching out
-thoughts while reading the code. They are personal, so they live outside the
-repository, in a folder per workspace and module:
+Every module can have notes: rough Markdown for sketching out thoughts while
+reading the code. They are personal, so they live outside the repository, in a
+folder per workspace and module:
 
 ```text
-~/.documenter/explorations/<workspace>/<crate>/<module_path>/<note>.md
+~/.documenter/notes/<workspace>/<crate>/<module_path>/<note>.md
 ```
 
 `<workspace>` is the workspace's absolute path with its separators replaced by
 `-`. The first Markdown H1 is the displayed title; the filename is separate and
-does not change when the title is edited. Explanations, and explorations kept
-in the repository (`src/**/explorations/` with drawings under `.documenter/`),
-are no longer read; move any notes you want to keep into the folder above.
+does not change when the title is edited. The explanations and explorations
+that older versions kept in the repository (`src/**/explanations/`,
+`src/**/explorations/`, and drawings under `.documenter/`) are no longer read;
+move any you want to keep into the folder above.
 
 The module graph's dependency edges come from `use` declarations and from module
 paths used in code, such as `child::run()`.

@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 
 import { api, apiUrl, token } from "./api.js";
 import GraphPage from "./GraphPage.jsx";
-import MarkdownPage from "./MarkdownPage.jsx";
+import NotePage from "./NotePage.jsx";
 import ModulePage, { NotFound } from "./ModulePage.jsx";
 
 const CodePage = lazy(() => import("./CodePage.jsx"));
@@ -20,8 +20,8 @@ function route() {
   if (segments[0] === "code" && segments.length === 2) {
     return { name: "code", module: segments[1] };
   }
-  if (segments[0] === "explorations" && segments.length === 3) {
-    return { name: "exploration", module: segments[1], file: segments[2] };
+  if (segments[0] === "notes" && segments.length === 3) {
+    return { name: "note", module: segments[1], file: segments[2] };
   }
   if (segments[0] === "drawings" && segments.length === 3) {
     return { name: "drawing", module: segments[1], file: segments[2] };
@@ -31,7 +31,7 @@ function route() {
 
 export default function App() {
   const [workspace, setWorkspace] = useState(null);
-  const [explorations, setExplorations] = useState({});
+  const [notes, setNotes] = useState({});
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
 
@@ -39,7 +39,7 @@ export default function App() {
     try {
       const response = await api("/api/workspace");
       setWorkspace(response.workspace);
-      setExplorations(response.explorations);
+      setNotes(response.notes);
       setRevision(response.revision);
       setError("");
     } catch (reason) {
@@ -68,11 +68,11 @@ export default function App() {
   const current = route();
   if (current.name === "graph") return <GraphPage workspace={workspace} />;
   if (current.name === "module") {
-    return <ModulePage workspace={workspace} explorations={explorations} moduleId={current.module} />;
+    return <ModulePage workspace={workspace} notes={notes} moduleId={current.module} />;
   }
-  if (current.name === "exploration") {
+  if (current.name === "note") {
     return (
-      <MarkdownPage
+      <NotePage
         moduleId={current.module}
         filename={current.file}
         workspaceRevision={revision}

@@ -43,8 +43,8 @@ export const routes = {
   graph: () => href("/"),
   module: (module) => href(`/modules/${encodeURIComponent(module)}`),
   code: (module, values = {}) => href(`/code/${encodeURIComponent(module)}`, values),
-  exploration: (module, file) =>
-    href(`/explorations/${encodeURIComponent(module)}/${encodeURIComponent(file)}`),
+  note: (module, file) =>
+    href(`/notes/${encodeURIComponent(module)}/${encodeURIComponent(file)}`),
   drawing: (module, file, values = {}) =>
     href(`/drawings/${encodeURIComponent(module)}/${encodeURIComponent(file)}`, values),
 };

@@ -158,7 +158,7 @@ export default function DrawingPage({ moduleId, filename, workspaceRevision }) {
     appState: { ...(scene.appState || {}), viewBackgroundColor: "#ffffff" },
     files: scene.files || {},
   };
-  const back = from ? routes.exploration(moduleId, from) : routes.module(moduleId);
+  const back = from ? routes.note(moduleId, from) : routes.module(moduleId);
 
   return (
     <main className="drawing-page">

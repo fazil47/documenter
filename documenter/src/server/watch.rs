@@ -1,14 +1,19 @@
-//! Debounced filesystem refreshes for documentation inputs.
+//! Debounced change notifications for the workspace's sources and its notes.
 
 use std::path::{Component, Path};
-use std::sync::Weak;
 use std::time::Duration;
 
 use notify::{RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::AppState;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Change {
+    /// Rust sources, manifests, or graph settings changed: analyze again.
+    Workspace,
+    /// Only notes or their drawings changed.
+    Notes,
+}
 
 pub(super) struct WorkspaceWatcher {
     _watcher: notify::RecommendedWatcher,
@@ -16,61 +21,58 @@ pub(super) struct WorkspaceWatcher {
 }
 
 impl WorkspaceWatcher {
-    /// Watches the workspace's sources and the exploration notes kept under `explorations`.
+    /// Watches `root` for changes to the Rust workspace and `notes_dir` for the
+    /// notes that `is_note` accepts. Each burst of events becomes one change:
+    /// `Workspace` if any of them touched the workspace, otherwise `Notes`.
     pub(super) fn start(
         root: &Path,
-        explorations: &Path,
-        state: Weak<AppState>,
-    ) -> anyhow::Result<Self> {
-        let root = root.to_path_buf();
-        let event_root = root.clone();
-        let event_explorations = explorations.to_path_buf();
-        // Each event says whether the Rust workspace needs analyzing again;
-        // exploration notes only need clients to reload them.
-        let (events, mut receiver) = mpsc::unbounded_channel();
+        notes_dir: &Path,
+        is_note: impl Fn(&Path) -> bool + Send + 'static,
+    ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<Change>)> {
+        let event_root = root.to_path_buf();
+        let (events, mut raw) = mpsc::unbounded_channel();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else { return };
-                if event
+                let change = if event
                     .paths
                     .iter()
-                    .any(|path| documentation_input(&event_root, path))
+                    .any(|path| workspace_input(&event_root, path))
                 {
-                    let _ = events.send(true);
-                } else if event
-                    .paths
-                    .iter()
-                    .any(|path| exploration_input(&event_explorations, path))
-                {
-                    let _ = events.send(false);
-                }
+                    Change::Workspace
+                } else if event.paths.iter().any(|path| is_note(path)) {
+                    Change::Notes
+                } else {
+                    return;
+                };
+                let _ = events.send(change);
             })?;
-        watcher.watch(&root, RecursiveMode::Recursive)?;
-        watcher.watch(explorations, RecursiveMode::Recursive)?;
+        watcher.watch(root, RecursiveMode::Recursive)?;
+        watcher.watch(notes_dir, RecursiveMode::Recursive)?;
 
+        let (changes, receiver) = mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
-            while let Some(mut analyze) = receiver.recv().await {
+            while let Some(mut change) = raw.recv().await {
                 loop {
-                    match tokio::time::timeout(Duration::from_millis(150), receiver.recv()).await {
-                        Ok(Some(more)) => analyze |= more,
+                    match tokio::time::timeout(Duration::from_millis(150), raw.recv()).await {
+                        Ok(Some(Change::Workspace)) => change = Change::Workspace,
+                        Ok(Some(Change::Notes)) => {}
                         Ok(None) => return,
                         Err(_) => break,
                     }
                 }
-                let Some(state) = state.upgrade() else {
+                if changes.send(change).is_err() {
                     return;
-                };
-                if analyze {
-                    let _ = state.refresh_workspace().await;
-                } else {
-                    state.bump_revision().await;
                 }
             }
         });
-        Ok(Self {
-            _watcher: watcher,
-            task,
-        })
+        Ok((
+            Self {
+                _watcher: watcher,
+                task,
+            },
+            receiver,
+        ))
     }
 }
 
@@ -80,34 +82,18 @@ impl Drop for WorkspaceWatcher {
     }
 }
 
-fn documentation_input(root: &Path, path: &Path) -> bool {
+fn workspace_input(root: &Path, path: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return false;
     };
     if ignored_path(relative) {
         return false;
     }
-    if path.file_name().is_some_and(|name| name == "Cargo.toml") {
-        return true;
-    }
-    if relative == Path::new(".documenter/config.toml") {
-        return true;
-    }
-    has_extension(path, &["rs"])
-}
-
-fn exploration_input(explorations: &Path, path: &Path) -> bool {
-    path.starts_with(explorations) && has_extension(path, &["md", "svg"])
-}
-
-fn has_extension(path: &Path, expected: &[&str]) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            expected
-                .iter()
-                .any(|expected| extension.eq_ignore_ascii_case(expected))
-        })
+    path.file_name().is_some_and(|name| name == "Cargo.toml")
+        || relative == Path::new(".documenter/config.toml")
+        || path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
 }
 
 fn ignored_path(relative: &Path) -> bool {
@@ -121,39 +107,51 @@ fn ignored_path(relative: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
-    fn filters_for_inputs_that_change_documentation() {
+    fn filters_for_inputs_that_change_the_workspace() {
         let root = Path::new("/workspace");
-        assert!(documentation_input(
-            root,
-            Path::new("/workspace/src/lib.rs")
-        ));
-        assert!(documentation_input(
+        assert!(workspace_input(root, Path::new("/workspace/src/lib.rs")));
+        assert!(workspace_input(
             root,
             Path::new("/workspace/.documenter/config.toml")
         ));
-        assert!(!documentation_input(
+        assert!(!workspace_input(
             root,
             Path::new("/workspace/target/generated.rs")
         ));
-        assert!(!documentation_input(
+        assert!(!workspace_input(
             root,
             Path::new("/workspace/docs/notes.md")
         ));
-        let explorations = Path::new("/home/.documenter/explorations/-workspace");
-        assert!(exploration_input(
-            explorations,
-            Path::new("/home/.documenter/explorations/-workspace/app/foo/idea.md")
-        ));
-        assert!(exploration_input(
-            explorations,
-            Path::new("/home/.documenter/explorations/-workspace/app/foo/sketch.svg")
-        ));
-        assert!(!exploration_input(
-            explorations,
-            Path::new("/workspace/src/foo/explorations/idea.md")
-        ));
+    }
+
+    #[tokio::test]
+    async fn reports_workspace_and_note_changes_separately() {
+        let directory = tempfile::tempdir().unwrap();
+        // Watchers report canonical paths, such as /private/var on macOS.
+        let folder = |name: &str| -> PathBuf {
+            let path = directory.path().join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            path.canonicalize().unwrap()
+        };
+        let (root, notes) = (folder("workspace"), folder("notes"));
+        let notes_filter = notes.clone();
+        let (_watcher, mut changes) =
+            WorkspaceWatcher::start(&root, &notes, move |path| path.starts_with(&notes_filter))
+                .unwrap();
+        let mut next = async || {
+            tokio::time::timeout(Duration::from_secs(10), changes.recv())
+                .await
+                .expect("no change reported")
+        };
+
+        std::fs::write(notes.join("idea.md"), "# Idea\n").unwrap();
+        assert_eq!(next().await, Some(Change::Notes));
+        std::fs::write(root.join("lib.rs"), "").unwrap();
+        assert_eq!(next().await, Some(Change::Workspace));
     }
 }

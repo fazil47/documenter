@@ -1,6 +1,6 @@
 //! Local documentation server and repository write boundary.
 
-mod explorations;
+mod notes;
 mod rust_analyzer;
 mod settings;
 mod storage;
@@ -30,10 +30,11 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
-use self::explorations::{Explorations, Note, note_title};
+use self::notes::{Note, Notes, note_title};
 use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer, ServerStatus};
 use self::settings::{Settings, Store as SettingsStore};
 use self::storage::atomic_write;
+use self::watch::{Change, WorkspaceWatcher};
 use crate::analysis::Workspace;
 use crate::drawing::{
     create_empty_drawing_svg, extract_scene_from_svg, has_embedded_scene,
@@ -69,7 +70,7 @@ struct AppState {
     scheduled_refresh: StdMutex<Option<JoinHandle<()>>>,
     rust_analyzer: RustAnalyzer,
     settings: SettingsStore,
-    explorations: Explorations,
+    notes: Notes,
 }
 
 struct ModelState {
@@ -93,7 +94,7 @@ impl DocumentationServer {
         })
         .await??;
         let root = workspace.root().to_path_buf();
-        let explorations = Explorations::for_workspace(&root)?;
+        let notes = Notes::for_workspace(&root)?;
         let (revisions, _) = broadcast::channel(32);
         let state = Arc::new(AppState {
             root: root.clone(),
@@ -108,13 +109,27 @@ impl DocumentationServer {
             scheduled_refresh: StdMutex::new(None),
             rust_analyzer: RustAnalyzer::new(root.clone()),
             settings: SettingsStore::for_user(),
-            explorations,
+            notes,
         });
-        let watcher = watch::WorkspaceWatcher::start(
-            &root,
-            state.explorations.root(),
-            Arc::downgrade(&state),
-        )?;
+        let (watcher, mut changes) =
+            WorkspaceWatcher::start(&root, state.notes.watched(), state.notes.matcher())?;
+        let changed = Arc::downgrade(&state);
+        tokio::spawn(async move {
+            while let Some(change) = changes.recv().await {
+                let Some(state) = changed.upgrade() else {
+                    return;
+                };
+                match change {
+                    Change::Workspace => {
+                        let _ = state.refresh_workspace().await;
+                    }
+                    // Notes are listed from disk on each request, so clients only need to reload.
+                    Change::Notes => {
+                        state.bump_revision().await;
+                    }
+                }
+            }
+        });
         Ok(Self {
             control: Arc::new(Control {
                 state,
@@ -278,11 +293,8 @@ fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/workspace", get(get_workspace))
         .route("/api/events", get(events))
-        .route(
-            "/api/exploration",
-            get(get_exploration).put(put_exploration),
-        )
-        .route("/api/explorations", post(create_exploration))
+        .route("/api/note", get(get_note).put(put_note))
+        .route("/api/notes", post(create_note))
         .route("/api/source", get(get_source).put(put_source))
         .route("/api/navigate", post(navigate))
         .route("/api/language-server", get(language_server))
@@ -324,8 +336,8 @@ struct DrawingQuery {
 struct WorkspaceResponse {
     revision: u64,
     workspace: Workspace,
-    /// Each module's exploration notes, by module id.
-    explorations: std::collections::BTreeMap<String, Vec<Note>>,
+    /// Each module's notes, by module id.
+    notes: std::collections::BTreeMap<String, Vec<Note>>,
 }
 
 async fn get_workspace(
@@ -337,13 +349,11 @@ async fn get_workspace(
     let (revision, workspace) = (model.revision, model.workspace.clone());
     drop(model);
     // Notes are read from disk, so not under the model lock.
-    let explorations = state
-        .explorations
-        .notes(workspace.module_ids().map(str::to_owned));
+    let notes = state.notes.notes(workspace.module_ids().map(str::to_owned));
     Ok(Json(WorkspaceResponse {
         revision,
         workspace,
-        explorations,
+        notes,
     }))
 }
 
@@ -365,7 +375,7 @@ async fn events(
 }
 
 #[derive(Serialize)]
-struct ExplorationResponse {
+struct NoteResponse {
     module: String,
     filename: String,
     title: String,
@@ -373,16 +383,16 @@ struct ExplorationResponse {
     revision: String,
 }
 
-async fn get_exploration(
+async fn get_note(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ResourceQuery>,
-) -> ApiResult<Json<ExplorationResponse>> {
+) -> ApiResult<Json<NoteResponse>> {
     state.authorize(&query.token)?;
     ensure_module(&state, &query.module).await?;
-    let path = state.explorations.note(&query.module, &query.file)?;
-    let content = std::fs::read_to_string(&path)
-        .map_err(|error| ApiError::io("reading exploration", error))?;
-    Ok(Json(ExplorationResponse {
+    let path = state.notes.note(&query.module, &query.file)?;
+    let content =
+        std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading note", error))?;
+    Ok(Json(NoteResponse {
         module: query.module,
         filename: query.file,
         title: note_title(&content, &path),
@@ -397,17 +407,17 @@ struct SaveContent {
     revision: String,
 }
 
-async fn put_exploration(
+async fn put_note(
     State(state): State<Arc<AppState>>,
     Query(query): Query<ResourceQuery>,
     Json(body): Json<SaveContent>,
-) -> ApiResult<Json<ExplorationResponse>> {
+) -> ApiResult<Json<NoteResponse>> {
     state.authorize(&query.token)?;
     ensure_module(&state, &query.module).await?;
-    let path = state.explorations.note(&query.module, &query.file)?;
-    write_if_unchanged(&path, &body, "exploration")?;
+    let path = state.notes.note(&query.module, &query.file)?;
+    write_if_unchanged(&path, &body, "note")?;
     state.bump_revision().await;
-    Ok(Json(ExplorationResponse {
+    Ok(Json(NoteResponse {
         module: query.module,
         filename: query.file,
         title: note_title(&body.content, &path),
@@ -417,33 +427,32 @@ async fn put_exploration(
 }
 
 #[derive(Debug, Deserialize)]
-struct NewExploration {
+struct NewNote {
     module: String,
     title: String,
     filename: String,
 }
 
-async fn create_exploration(
+async fn create_note(
     State(state): State<Arc<AppState>>,
     Query(query): Query<AuthQuery>,
-    Json(body): Json<NewExploration>,
-) -> ApiResult<(StatusCode, Json<ExplorationResponse>)> {
+    Json(body): Json<NewNote>,
+) -> ApiResult<(StatusCode, Json<NoteResponse>)> {
     state.authorize(&query.token)?;
     let title = validate_title(&body.title)?;
     ensure_module(&state, &body.module).await?;
     let (path, filename) = state
-        .explorations
+        .notes
         .new_note(&body.module, &body.filename)
         .map_err(|error| {
-            ApiError::from(error).conflict("an exploration with that filename already exists")
+            ApiError::from(error).conflict("a note with that filename already exists")
         })?;
     let content = format!("# {title}\n");
-    atomic_write(&path, &content)
-        .map_err(|error| ApiError::internal("creating exploration", error))?;
+    atomic_write(&path, &content).map_err(|error| ApiError::internal("creating note", error))?;
     state.bump_revision().await;
     Ok((
         StatusCode::CREATED,
-        Json(ExplorationResponse {
+        Json(NoteResponse {
             module: body.module,
             filename,
             title,
@@ -656,7 +665,7 @@ async fn get_drawing(
 ) -> ApiResult<Json<DrawingResponse>> {
     state.authorize(&query.token)?;
     ensure_module(&state, &query.module).await?;
-    let path = state.explorations.drawing(&query.module, &query.file)?;
+    let path = state.notes.drawing(&query.module, &query.file)?;
     let svg =
         std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading drawing", error))?;
     let scene = extract_scene_from_svg(&svg)
@@ -685,7 +694,7 @@ async fn put_drawing(
 ) -> ApiResult<Json<DrawingResponse>> {
     state.authorize(&query.token)?;
     ensure_module(&state, &query.module).await?;
-    let path = state.explorations.drawing(&query.module, &query.file)?;
+    let path = state.notes.drawing(&query.module, &query.file)?;
     let current =
         std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading drawing", error))?;
     if content_revision(&current) != body.revision {
@@ -741,9 +750,9 @@ async fn create_drawing(
     state.authorize(&query.token)?;
     let display_name = validate_title(&body.name)?;
     ensure_module(&state, &body.module).await?;
-    state.explorations.note(&body.module, &body.document)?;
+    state.notes.note(&body.module, &body.document)?;
     let (path, filename) = state
-        .explorations
+        .notes
         .new_drawing(&body.module, &display_name.to_case(Case::Snake))
         .map_err(|error| {
             ApiError::from(error).conflict("a drawing with that name already exists in this module")
@@ -768,7 +777,7 @@ async fn get_drawing_file(
 ) -> ApiResult<Response> {
     state.authorize(&query.token)?;
     ensure_module(&state, &query.module).await?;
-    let path = state.explorations.drawing(&query.module, &query.file)?;
+    let path = state.notes.drawing(&query.module, &query.file)?;
     let bytes = std::fs::read(path).map_err(|error| ApiError::io("reading drawing", error))?;
     Ok(([(header::CONTENT_TYPE, "image/svg+xml")], bytes).into_response())
 }
@@ -929,17 +938,16 @@ impl ApiError {
     }
 }
 
-impl From<explorations::Error> for ApiError {
-    fn from(error: explorations::Error) -> Self {
+impl From<notes::Error> for ApiError {
+    fn from(error: notes::Error) -> Self {
         match error {
-            explorations::Error::Name(message) => Self::new(StatusCode::BAD_REQUEST, message),
-            explorations::Error::Missing => Self::new(StatusCode::NOT_FOUND, "not found"),
-            explorations::Error::Exists => Self::new(StatusCode::CONFLICT, "already exists"),
-            explorations::Error::Outside => Self::new(
-                StatusCode::FORBIDDEN,
-                "path escapes the explorations folder",
-            ),
-            explorations::Error::Io(error) => Self::io("accessing explorations", error),
+            notes::Error::Name(message) => Self::new(StatusCode::BAD_REQUEST, message),
+            notes::Error::Missing => Self::new(StatusCode::NOT_FOUND, "not found"),
+            notes::Error::Exists => Self::new(StatusCode::CONFLICT, "already exists"),
+            notes::Error::Outside => {
+                Self::new(StatusCode::FORBIDDEN, "path escapes the notes folder")
+            }
+            notes::Error::Io(error) => Self::io("accessing notes", error),
         }
     }
 }
@@ -973,12 +981,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_writes_explorations_and_their_drawings_outside_the_workspace() {
+    async fn api_writes_notes_and_their_drawings_outside_the_workspace() {
         let project = sample_project();
         let app = test_router(project.path());
-        let store = project
-            .path()
-            .join("target/test-explorations/sample/engine");
+        let root = project.path().canonicalize().unwrap();
+        let store = root
+            .join("target/test-notes")
+            .join(root.to_string_lossy().replace(['/', '\\', ':'], "-"))
+            .join("sample/engine");
 
         let unauthorized = app
             .clone()
@@ -992,10 +1002,10 @@ mod tests {
             .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
-        let exploration = json_request(
+        let created = json_request(
             &app,
             "POST",
-            "/api/explorations?token=test-token",
+            "/api/notes?token=test-token",
             serde_json::json!({
                 "module": "sample::engine",
                 "title": "Async Rendering",
@@ -1003,8 +1013,8 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(exploration.0, StatusCode::CREATED);
-        assert_eq!(exploration.1["filename"], "async_rendering.md");
+        assert_eq!(created.0, StatusCode::CREATED);
+        assert_eq!(created.1["filename"], "async_rendering.md");
         let note = store.join("async_rendering.md");
         assert_eq!(fs::read_to_string(&note).unwrap(), "# Async Rendering\n");
 
@@ -1016,14 +1026,14 @@ mod tests {
         )
         .await;
         assert_eq!(
-            workspace.1["explorations"]["sample::engine"][0]["title"],
+            workspace.1["notes"]["sample::engine"][0]["title"],
             "Async Rendering"
         );
 
         let conflict = json_request(
             &app,
             "PUT",
-            "/api/exploration?token=test-token&module=sample::engine&file=async_rendering.md",
+            "/api/note?token=test-token&module=sample::engine&file=async_rendering.md",
             serde_json::json!({ "content": "# Changed\n", "revision": "stale" }),
         )
         .await;
@@ -1033,7 +1043,7 @@ mod tests {
         let saved = json_request(
             &app,
             "PUT",
-            "/api/exploration?token=test-token&module=sample::engine&file=async_rendering.md",
+            "/api/note?token=test-token&module=sample::engine&file=async_rendering.md",
             serde_json::json!({
                 "content": "# Async Rendering\n\nOpen questions.\n",
                 "revision": content_revision("# Async Rendering\n")
@@ -1046,7 +1056,7 @@ mod tests {
         let unknown_module = json_request(
             &app,
             "POST",
-            "/api/explorations?token=test-token",
+            "/api/notes?token=test-token",
             serde_json::json!({ "module": "sample::missing", "title": "Notes", "filename": "notes" }),
         )
         .await;
@@ -1319,7 +1329,7 @@ mod tests {
             scheduled_refresh: StdMutex::new(None),
             rust_analyzer: RustAnalyzer::new(root.clone()),
             settings: SettingsStore::at(Some(root.join("target/test-settings.json"))),
-            explorations: Explorations::at(root.join("target/test-explorations")).unwrap(),
+            notes: Notes::at(root.join("target/test-notes"), &root).unwrap(),
         }))
     }
 

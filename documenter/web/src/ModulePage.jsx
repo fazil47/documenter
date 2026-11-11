@@ -6,7 +6,7 @@ import { suggestedFilename } from "./names.js";
 
 const PLACEHOLDER = "Alternative rendering model";
 
-function NewExplorationDialog({ module, onClose }) {
+function NewNoteDialog({ module, onClose }) {
   const [title, setTitle] = useState("");
   const [filename, setFilename] = useState("");
   const [filenameEdited, setFilenameEdited] = useState(false);
@@ -19,13 +19,13 @@ function NewExplorationDialog({ module, onClose }) {
     setError("");
     try {
       const document = await api(
-        "/api/explorations",
+        "/api/notes",
         {
           method: "POST",
           body: JSON.stringify({ module: module.id, title, filename }),
         },
       );
-      window.location.assign(routes.exploration(module.id, document.filename));
+      window.location.assign(routes.note(module.id, document.filename));
     } catch (reason) {
       setError(reason.message);
       setSaving(false);
@@ -34,8 +34,8 @@ function NewExplorationDialog({ module, onClose }) {
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-exploration-title" onMouseDown={(event) => event.stopPropagation()}>
-        <h2 id="new-exploration-title">New exploration</h2>
+      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="new-note-title" onMouseDown={(event) => event.stopPropagation()}>
+        <h2 id="new-note-title">New note</h2>
         <form onSubmit={create}>
           <label>
             Title
@@ -68,7 +68,7 @@ function NewExplorationDialog({ module, onClose }) {
           <footer className="modal-actions">
             <button type="button" onClick={onClose}>Cancel</button>
             <button className="primary" type="submit" disabled={saving || !title.trim() || !filename.trim()}>
-              {saving ? "Creating…" : "Create exploration"}
+              {saving ? "Creating…" : "Create note"}
             </button>
           </footer>
         </form>
@@ -78,20 +78,20 @@ function NewExplorationDialog({ module, onClose }) {
 }
 
 // Rough notes and drawings, kept outside the repository (see the README).
-function ExplorationSection({ module, notes, onCreate }) {
+function NotesSection({ module, notes, onCreate }) {
   return (
     <section className="content-section">
       <div className="section-heading-row">
-        <h2>Explorations</h2>
+        <h2>Notes</h2>
         <button className="primary" type="button" onClick={onCreate}>
-          New exploration
+          New note
         </button>
       </div>
       {notes.length > 0 ? (
         <ul className="document-list">
           {notes.map((note) => (
             <li key={note.filename}>
-              <a href={routes.exploration(module.id, note.filename)}>
+              <a href={routes.note(module.id, note.filename)}>
                 <span>{note.title}</span>
                 <code>{note.filename}</code>
               </a>
@@ -99,13 +99,13 @@ function ExplorationSection({ module, notes, onCreate }) {
           ))}
         </ul>
       ) : (
-        <p className="empty-copy">No explorations have been written for this module.</p>
+        <p className="empty-copy">No notes have been written for this module.</p>
       )}
     </section>
   );
 }
 
-export default function ModulePage({ workspace, explorations, moduleId }) {
+export default function ModulePage({ workspace, notes, moduleId }) {
   const [creating, setCreating] = useState(false);
   const module = useMemo(
     () => workspace.modules.find((candidate) => candidate.id === moduleId),
@@ -134,9 +134,9 @@ export default function ModulePage({ workspace, explorations, moduleId }) {
             <p className="empty-copy">This module does not have native Rust documentation yet.</p>
           )}
         </section>
-        <ExplorationSection module={module} notes={explorations[module.id] ?? []} onCreate={() => setCreating(true)} />
+        <NotesSection module={module} notes={notes[module.id] ?? []} onCreate={() => setCreating(true)} />
       </div>
-      {creating && <NewExplorationDialog module={module} onClose={() => setCreating(false)} />}
+      {creating && <NewNoteDialog module={module} onClose={() => setCreating(false)} />}
     </main>
   );
 }
