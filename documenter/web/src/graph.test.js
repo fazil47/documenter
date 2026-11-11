@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { focusPositions, graphElements } from "./graph.js";
@@ -141,5 +142,99 @@ describe("focusPositions", () => {
     expect([...routes.keys()]).toEqual(["rust -> cfg", "rust -> cargo"]);
     expect(routes.get("rust -> cfg").map((point) => point.x)).toEqual([positions.analysis.x, positions.cargo.x]);
     expect(Object.keys(positions)).toHaveLength(5);
+  });
+});
+
+// A focused module, the modules it depends on transitively, and the edges
+// between them, as focus mode lays them out; with random node sizes.
+const focusGraph = fc
+  .record({
+    count: fc.integer({ min: 1, max: 9 }),
+    pairs: fc.array(fc.tuple(fc.nat(8), fc.nat(8)), { maxLength: 24 }),
+    widths: fc.array(fc.integer({ min: 20, max: 200 }), { minLength: 9, maxLength: 9 }),
+    heights: fc.array(fc.integer({ min: 10, max: 60 }), { minLength: 9, maxLength: 9 }),
+  })
+  .map(({ count, pairs, widths, heights }) => {
+    const id = (index) => `m${index % count}`;
+    const all = [...new Set(pairs.map(([source, target]) => `${id(source)} ${id(target)}`))]
+      .map((pair) => pair.split(" "))
+      .filter(([source, target]) => source !== target);
+    const kept = new Set(["m0"]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const [source, target] of all) {
+        if (kept.has(source) && !kept.has(target)) {
+          kept.add(target);
+          grew = true;
+        }
+      }
+    }
+    const edges = all.filter(([source]) => kept.has(source));
+    const sizes = Object.fromEntries([...kept].map((node) => {
+      const index = Number(node.slice(1));
+      return [node, { width: widths[index], height: heights[index] }];
+    }));
+    return { kept, edges, sizes };
+  });
+
+describe("focusPositions properties", () => {
+  it("places every module, with edges pointing right except those closing a cycle", () => {
+    fc.assert(fc.property(focusGraph, ({ kept, edges, sizes }) => {
+      const { positions, cycles } = focusPositions("m0", edges, sizes);
+      expect(Object.keys(positions).sort()).toEqual([...kept].sort());
+      for (const [source, target] of edges) {
+        if (!cycles.has(`${source} -> ${target}`)) expect(positions[source].x).toBeLessThan(positions[target].x);
+      }
+    }));
+  });
+
+  it("only sets aside edges that do close a cycle", () => {
+    fc.assert(fc.property(focusGraph, ({ edges, sizes }) => {
+      const { cycles } = focusPositions("m0", edges, sizes);
+      const forward = edges.filter(([source, target]) => !cycles.has(`${source} -> ${target}`));
+      const reaches = (from, to) => {
+        const seen = new Set([from]);
+        const queue = [from];
+        while (queue.length > 0) {
+          const node = queue.shift();
+          if (node === to) return true;
+          for (const [source, target] of forward) {
+            if (source === node && !seen.has(target)) {
+              seen.add(target);
+              queue.push(target);
+            }
+          }
+        }
+        return false;
+      };
+      for (const key of cycles) {
+        const [source, target] = key.split(" -> ");
+        expect(reaches(target, source)).toBe(true);
+      }
+    }));
+  });
+
+  it("never overlaps modules in a column", () => {
+    fc.assert(fc.property(focusGraph, ({ edges, sizes }) => {
+      const { positions } = focusPositions("m0", edges, sizes);
+      const nodes = Object.entries(positions);
+      for (const [left, a] of nodes) {
+        for (const [right, b] of nodes) {
+          if (left >= right || a.x !== b.x) continue;
+          expect(Math.abs(a.y - b.y)).toBeGreaterThanOrEqual((sizes[left].height + sizes[right].height) / 2);
+        }
+      }
+    }));
+  });
+
+  it("routes long edges through points that move steadily right", () => {
+    fc.assert(fc.property(focusGraph, ({ edges, sizes }) => {
+      const { positions, routes } = focusPositions("m0", edges, sizes);
+      for (const [key, points] of routes) {
+        const [source, target] = key.split(" -> ");
+        const xs = [positions[source].x, ...points.map((point) => point.x), positions[target].x];
+        for (let index = 1; index < xs.length; index += 1) expect(xs[index]).toBeGreaterThan(xs[index - 1]);
+      }
+    }));
   });
 });

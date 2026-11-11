@@ -25,6 +25,7 @@
   "devDependencies": {
     "@informalsystems/quint": "0.33.1",
     "@vitejs/plugin-react": "6.1.0",
+    "fast-check": "4.10.2",
     "vite": "8.2.4",
     "vitest": "4.1.12"
   },
