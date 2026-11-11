@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use syn::{Attribute, Expr, Item, ItemMod, Lit, Meta, UseTree};
+use syn::visit::{self, Visit};
+use syn::{Attribute, Expr, Item, ItemMod, ItemUse, Lit, Meta, UseTree};
 
 use super::cargo::Package;
 use super::cfg::{self, CfgSet};
@@ -111,7 +112,7 @@ impl<'a> ContextState<'a> {
         self.uses
             .entry(module_id.to_owned())
             .or_default()
-            .extend(collect_uses(&parsed.items, cfg));
+            .extend(collect_references(&parsed.items, cfg));
 
         let child_base = module_directory(file_path);
         for item in &parsed.items {
@@ -141,7 +142,7 @@ impl<'a> ContextState<'a> {
             self.uses
                 .entry(id.clone())
                 .or_default()
-                .extend(collect_uses(items, cfg));
+                .extend(collect_references(items, cfg));
             let nested_base = child_base.join(&name);
             for nested in items {
                 if let Item::Mod(module) = nested {
@@ -238,7 +239,7 @@ impl<'a> ContextState<'a> {
                 .uses
                 .entry(root.to_owned())
                 .or_default()
-                .extend(collect_uses(&file.items, cfg)),
+                .extend(collect_references(&file.items, cfg)),
             Err(error) => self.warnings.push(error.to_string()),
         }
     }
@@ -302,16 +303,64 @@ fn combine_docs(outer: &str, inner: &str) -> String {
     }
 }
 
-fn collect_uses(items: &[Item], cfg: &CfgSet) -> Vec<Vec<String>> {
-    let mut paths = Vec::new();
+// The paths a module's items refer to other modules by: its `use`
+// declarations and paths such as `child::run()` or `crate::a::B` in its code.
+// Nested modules are walked on their own.
+fn collect_references(items: &[Item], cfg: &CfgSet) -> Vec<Vec<String>> {
+    let mut paths = CodePaths(Vec::new());
     for item in items {
-        if let Item::Use(item) = item
-            && cfg::active(cfg, &item.attrs)
-        {
-            expand_use_tree(&item.tree, Vec::new(), &mut paths);
+        if !cfg::active(cfg, item_attrs(item)) {
+            continue;
+        }
+        if let Item::Use(item) = item {
+            expand_use_tree(&item.tree, Vec::new(), &mut paths.0);
+        } else {
+            paths.visit_item(item);
         }
     }
-    paths
+    paths.0
+}
+
+// Multi-segment paths in code; single segments cannot name another module.
+struct CodePaths(Vec<Vec<String>>);
+
+impl<'ast> Visit<'ast> for CodePaths {
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        if path.segments.len() > 1 {
+            self.0.push(
+                path.segments
+                    .iter()
+                    .map(|segment| segment.ident.to_string())
+                    .collect(),
+            );
+        }
+        visit::visit_path(self, path);
+    }
+
+    fn visit_item_mod(&mut self, _: &'ast ItemMod) {}
+
+    fn visit_item_use(&mut self, _: &'ast ItemUse) {}
+}
+
+fn item_attrs(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(item) => &item.attrs,
+        Item::Enum(item) => &item.attrs,
+        Item::ExternCrate(item) => &item.attrs,
+        Item::Fn(item) => &item.attrs,
+        Item::ForeignMod(item) => &item.attrs,
+        Item::Impl(item) => &item.attrs,
+        Item::Macro(item) => &item.attrs,
+        Item::Mod(item) => &item.attrs,
+        Item::Static(item) => &item.attrs,
+        Item::Struct(item) => &item.attrs,
+        Item::Trait(item) => &item.attrs,
+        Item::TraitAlias(item) => &item.attrs,
+        Item::Type(item) => &item.attrs,
+        Item::Union(item) => &item.attrs,
+        Item::Use(item) => &item.attrs,
+        _ => &[],
+    }
 }
 
 fn expand_use_tree(tree: &UseTree, prefix: Vec<String>, output: &mut Vec<Vec<String>>) {

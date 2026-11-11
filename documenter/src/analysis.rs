@@ -246,6 +246,42 @@ mod tests {
     }
 
     #[test]
+    fn links_modules_referred_to_by_paths_in_code() {
+        let temp = tempdir().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(temp.path().join("src")).unwrap();
+        fs::write(
+            temp.path().join("src/lib.rs"),
+            "mod engine;\nmod frame;\nmod unused;\n\
+             fn start() -> Option<frame::Frame> { engine::run(); None }\n\
+             #[cfg(any())]\nfn disabled() { unused::f(); }\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("src/engine.rs"),
+            "pub fn run() { let _ = String::from(\"x\"); }\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("src/frame.rs"), "pub struct Frame;\n").unwrap();
+        fs::write(temp.path().join("src/unused.rs"), "pub fn f() {}\n").unwrap();
+
+        let workspace = Workspace::load(temp.path()).unwrap();
+        let edges = workspace
+            .edges
+            .iter()
+            .map(|edge| (edge.source.as_str(), edge.target.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            edges,
+            vec![("sample", "sample::engine"), ("sample", "sample::frame")]
+        );
+    }
+
+    #[test]
     fn marks_configured_terminal_module_names_as_folded() {
         let temp = tempdir().unwrap();
         fs::write(
