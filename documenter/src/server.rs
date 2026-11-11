@@ -628,6 +628,12 @@ async fn navigate(
     state.authorize(&query.token)?;
     let path = source_path(&state, &body.module).await?;
     ensure_safe_existing_file(&state.root, &path)?;
+    if path.extension().is_none_or(|extension| extension != "rs") {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "navigation works in Rust files, through rust-analyzer",
+        ));
+    }
     let locations = state
         .rust_analyzer
         .navigate(body.kind, &path, &body.content, (body.line, body.character))

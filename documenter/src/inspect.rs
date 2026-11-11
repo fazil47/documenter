@@ -62,7 +62,21 @@ fn modules(workspace: &Workspace) -> String {
     // By path segments, so `a::b` follows `a` and not, say, `a1`.
     let mut ids = workspace.module_ids().collect::<Vec<_>>();
     ids.sort_by(|left, right| left.split("::").cmp(right.split("::")));
+    let roots = ids
+        .iter()
+        .copied()
+        .filter(|id| !id.contains("::"))
+        .collect::<Vec<_>>();
+    let mut heading = "";
     for id in ids {
+        // JavaScript packages have no root module, so they get a heading.
+        let package = id.split("::").next().unwrap_or(id);
+        if package != heading {
+            heading = package;
+            if !roots.contains(&package) {
+                let _ = writeln!(out, "{package}  (package)");
+            }
+        }
         let depth = id.matches("::").count();
         let name = if depth == 0 {
             id
@@ -122,7 +136,11 @@ fn module(workspace: &Workspace, notes: &anyhow::Result<Notes>, id: &str) -> Str
             } else {
                 ""
             };
-            let _ = write!(out, "  {} ({}){kind}", test.name(), test.line());
+            let at = match test.file() {
+                Some(file) => format!("{file}:{}", test.line()),
+                None => test.line().to_string(),
+            };
+            let _ = write!(out, "  {} ({at}){kind}", test.name());
             if !test.summary().is_empty() {
                 let _ = write!(out, "  {}", test.summary());
             }

@@ -1,7 +1,9 @@
-//! Rust workspace discovery and documentation model.
+//! Workspace discovery and documentation model: the Rust crates of a Cargo
+//! workspace, and the JavaScript packages in it.
 
 mod cargo;
 mod cfg;
+mod javascript;
 #[cfg(test)]
 mod lean_oracle;
 mod model;
@@ -43,6 +45,32 @@ impl Workspace {
         let cfg = cfg::CfgSet::for_target(None)?;
         let settings = settings::Settings::load(&root)?;
         let mut analysis = rust::analyze(&packages, &cfg, documents)?;
+        // Named apart from the Rust crates, so the two never share module ids.
+        let crates = analysis
+            .modules
+            .iter()
+            .map(|module| module.crate_name.clone())
+            .collect();
+        let javascript = javascript::analyze(&root, &crates);
+        analysis.modules.extend(javascript.modules);
+        analysis.edges.extend(javascript.edges);
+        analysis.warnings.extend(javascript.warnings);
+        analysis
+            .modules
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        // Ids are unique by construction; should two still clash, the first stays.
+        let mut warnings = Vec::new();
+        analysis.modules.dedup_by(|later, kept| {
+            let clash = later.id == kept.id;
+            if clash {
+                warnings.push(format!(
+                    "module {} is defined twice; the second is skipped",
+                    later.id
+                ));
+            }
+            clash
+        });
+        analysis.warnings.extend(warnings);
         for module in &mut analysis.modules {
             module.folded = module.id.contains("::") && settings.folds(&module.name);
         }
@@ -255,6 +283,7 @@ mod tests {
                             crate_name: "c".to_owned(),
                             name: id.rsplit("::").next().unwrap_or(id).to_owned(),
                             docs: String::new(),
+                            language: model::Language::Rust,
                             folded: false,
                             items: Vec::new(),
                             tests: Vec::new(),

@@ -4,8 +4,8 @@
 
 use std::path::Path;
 
-use super::model::{Module, Spec, summary};
-use super::rust::module_directory;
+use super::model::{Language, Module, Spec, summary};
+use super::{javascript, rust};
 
 /// Fills in the state models and oracles of `modules`, whose files are under
 /// `root`. A module's specs are in the directory its submodules are in.
@@ -14,7 +14,10 @@ pub(super) fn attach(root: &Path, modules: &mut [Module]) {
         let Some(source) = &module.source_path else {
             continue;
         };
-        let directory = module_directory(source);
+        let directory = match module.language {
+            Language::Rust => rust::module_directory(source),
+            Language::JavaScript => javascript::module_directory(source),
+        };
         module.state_models = [("quint", "qnt"), ("tla", "tla")]
             .into_iter()
             .flat_map(|(folder, extension)| specs(root, &directory.join(folder), extension))

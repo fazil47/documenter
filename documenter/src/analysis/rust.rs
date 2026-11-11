@@ -11,13 +11,7 @@ use syn::{
 
 use super::cargo::Package;
 use super::cfg::{self, CfgSet};
-use super::model::{ApiItem, Edge, Module, Test, summary};
-
-pub(super) struct Analysis {
-    pub(super) modules: Vec<Module>,
-    pub(super) edges: Vec<Edge>,
-    pub(super) warnings: Vec<String>,
-}
+use super::model::{Analysis, ApiItem, Edge, Language, Module, Test, summary};
 
 pub(super) fn analyze(
     packages: &[Package],
@@ -192,6 +186,7 @@ impl<'a> ContextState<'a> {
                 crate_name: crate_name(id).to_owned(),
                 name: module_name(id),
                 docs,
+                language: Language::Rust,
                 folded: false,
                 items,
                 tests,
@@ -214,6 +209,7 @@ impl<'a> ContextState<'a> {
             crate_name: crate_name(id).to_owned(),
             name: module_name(id),
             docs,
+            language: Language::Rust,
             folded: false,
             items,
             tests,
@@ -272,6 +268,7 @@ fn collect_tests(items: &[Item], cfg: &CfgSet, in_test_module: bool) -> Vec<Test
             Item::Fn(function) if function.attrs.iter().any(is_test_attribute) => {
                 found.push(Test {
                     name: function.sig.ident.to_string(),
+                    file: None,
                     line: function.sig.ident.span().start().line,
                     property: false,
                     summary: summary(&doc_text(&function.attrs)),
@@ -330,6 +327,7 @@ fn property_tests(tokens: proc_macro2::TokenStream) -> Vec<Test> {
                 if let Some(TokenTree::Ident(name)) = tokens.peek() {
                     found.push(Test {
                         name: name.to_string(),
+                        file: None,
                         line: name.span().start().line,
                         property: true,
                         summary: summary(&docs.join("\n")),

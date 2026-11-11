@@ -1,10 +1,11 @@
 # documenter
 
 `documenter` is an editor-agnostic Rust language server that opens a local,
-documentation-centric view of a codebase. Its web workspace combines an
-interactive module dependency graph, native Rust module documentation, the
-module source in an editor with optional Helix keybindings, and personal notes
-with editable Excalidraw drawings.
+documentation-centric view of a codebase: its Rust crates and the JavaScript
+packages alongside them. Its web workspace combines an interactive module
+dependency graph, native module documentation, the module source in an editor
+with optional Helix keybindings, and personal notes with editable Excalidraw
+drawings.
 
 ## Build
 
@@ -112,6 +113,18 @@ folder above.
 
 The module graph's dependency edges come from `use` declarations and from module
 paths used in code, such as `child::run()`.
+
+JavaScript and TypeScript packages in the workspace are analysed too: each
+folder with a `package.json` (outside `node_modules`, `target`, `dist` and the
+like) is a package whose source files, under `src/` if it has one, are its
+modules, named after their paths (`index` files stand for their folder). Their
+edges are relative `import`s, `export … from`s and dynamic `import()`s; a file's
+leading comment is its documentation and its exports are its items. Tests in
+`*.test.*` and `*.spec.*` files belong to the module they are named after, or to
+their folder's. Each crate and package is its own box in the graph, labelled
+with its language; a dependency between them would be drawn module to module,
+across the boxes. Source pages edit JavaScript too, without rust-analyzer's
+navigation or Helix's syntax-aware commands.
 
 Clicking a module in the graph focuses it: only the module and everything it
 depends on stay, laid out from the left, and the module shows the start of its

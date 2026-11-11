@@ -22,15 +22,18 @@ export function graphElements(workspace) {
   const visibleModules = workspace.modules.filter(
     (module) => !folded.has(module.id),
   );
-  const crates = [...new Set(workspace.modules.map((module) => module.crate_name))];
-  const parents = crates.map((name) => ({
-    data: { id: `__crate__${name}`, label: name, box: true },
+  // Each Rust crate or JavaScript package is a box, labelled with its language.
+  const languages = new Map(workspace.modules.map((module) => [module.crate_name, module.language]));
+  const parents = [...languages].map(([name, language]) => ({
+    data: { id: `__crate__${name}`, label: name, box: true, language },
   }));
   const modules = visibleModules.map((module) => ({
     data: {
       id: module.id,
       item: module.id,
-      label: module.id === module.crate_name ? "crate root" : module.name,
+      label: module.id === module.crate_name
+        ? (module.language === "javascript" ? "package root" : "crate root")
+        : module.name,
       parent: `__crate__${module.crate_name}`,
       fileBacked: module.file_backed,
     },

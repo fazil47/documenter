@@ -124,10 +124,12 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     notify: (text, error = false) => setStatus((current) => ({ ...current, message: { text, error } })),
   }));
   const [syntax, setSyntax] = useState(undefined);
-  latest.current = { editor, fileName, onCommand, syntax };
+  latest.current = { editor, fileName, onCommand, syntax: fileName?.endsWith(".rs") ? syntax : undefined };
 
+  // Syntax-aware commands use the Rust grammar, so other files go without.
+  const rust = Boolean(fileName?.endsWith(".rs"));
   useEffect(() => {
-    if (!enabled || syntax) return undefined;
+    if (!enabled || syntax || !rust) return undefined;
     let live = true;
     loadSyntax().then(
       (loaded) => live && setSyntax(() => loaded),
@@ -136,7 +138,7 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     return () => {
       live = false;
     };
-  }, [enabled, syntax, actions]);
+  }, [enabled, syntax, rust, actions]);
 
   useEffect(() => {
     if (!enabled || !container) return undefined;

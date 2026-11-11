@@ -12,6 +12,11 @@ convert_case = "0.11"
 mime_guess = "2"
 notify = "8.2"
 open = "5"
+oxc_allocator = "=0.156.0"
+oxc_ast = "=0.156.0"
+oxc_ast_visit = "=0.156.0"
+oxc_parser = "=0.156.0"
+oxc_span = "=0.156.0"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 rust-embed = "8"
 serde = { version = "1", features = ["derive"] }

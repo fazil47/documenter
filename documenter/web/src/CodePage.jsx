@@ -94,12 +94,13 @@ function LanguageServerStatus({ server }) {
 }
 
 // Polls the server, which starts rust-analyzer the first time, as Helix does on
-// opening a file. Mounted with the Helix status line, so it polls only in Helix mode.
-// Polling stops on a missing or failed server and resumes after the next lookup,
-// which restarts rust-analyzer.
-function useLanguageServer(lookups) {
+// opening a file. Mounted with the Helix status line, so it polls only in Helix mode,
+// and only for Rust files. Polling stops on a missing or failed server and resumes
+// after the next lookup, which restarts rust-analyzer.
+function useLanguageServer(lookups, enabled) {
   const [server, setServer] = useState(undefined);
   useEffect(() => {
+    if (!enabled) return undefined;
     let stopped = false;
     let timer;
     const poll = async () => {
@@ -120,13 +121,16 @@ function useLanguageServer(lookups) {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [lookups]);
+  }, [lookups, enabled]);
   return server;
 }
 
-function HelixStatus({ status, lookups }) {
+// rust-analyzer and the tree-sitter grammar cover Rust files only.
+const isRust = (path) => Boolean(path?.endsWith(".rs"));
+
+function HelixStatus({ status, lookups, languageServer }) {
   const { mode, pending, prompt, message, recording } = status;
-  const server = useLanguageServer(lookups);
+  const server = useLanguageServer(lookups, languageServer);
   return (
     <footer className={`helix-status helix-${mode}`}>
       <span className="helix-mode">{MODE_LABELS[mode]}</span>
@@ -136,7 +140,7 @@ function HelixStatus({ status, lookups }) {
         <span className={`helix-message ${message?.error ? "error" : ""}`}>{message?.text}</span>
       )}
       {recording && <span className="helix-recording">[recording {recording}]</span>}
-      <LanguageServerStatus server={server} />
+      {languageServer && <LanguageServerStatus server={server} />}
       <span className="helix-pending">{pending}</span>
     </footer>
   );
@@ -363,6 +367,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     } else if (command.type === "reload") {
       load();
     } else if (command.type === "navigate") {
+      if (!isRust(source?.path)) return "no language server for this file; goto works in Rust files";
       navigate(command);
     } else if (command.type === "jumpFile") {
       const state = window.history.state ?? {};
@@ -372,7 +377,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       window.history.go(command.direction);
     }
     return undefined;
-  }, [dirty, save, load, moduleId, navigate]);
+  }, [dirty, save, load, moduleId, navigate, source]);
 
   const [helixStatus, actions] = useHelix({
     editor,
@@ -470,7 +475,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
           </div>
         )}
       </div>
-      {helixEnabled && <HelixStatus status={helixStatus} lookups={lookups} />}
+      {helixEnabled && <HelixStatus status={helixStatus} lookups={lookups} languageServer={isRust(source?.path)} />}
       {picker && (
         <LocationPicker
           title={picker.title}

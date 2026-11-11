@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Change {
-    /// Rust sources, specs, manifests, or graph settings changed: analyze again.
+    /// Sources, specs, manifests, or graph settings changed: analyze again.
     Workspace,
     /// Only notes or their drawings changed.
     Notes,
@@ -97,28 +97,38 @@ fn workspace_input(root: &Path, path: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return false;
     };
-    if ignored_path(relative) {
+    if ignored_path(root, relative) {
         return false;
     }
-    path.file_name().is_some_and(|name| name == "Cargo.toml")
+    path.file_name()
+        .is_some_and(|name| name == "Cargo.toml" || name == "package.json")
         || relative == Path::new(".documenter/config.toml")
-        // Rust sources, and the state models and oracles beside them.
+        // Rust and JavaScript sources, and the specs beside them.
         || path.extension().is_some_and(|extension| {
-            ["rs", "qnt", "tla", "lean"]
+            [
+                "rs", "js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts", "qnt", "tla", "lean",
+            ]
                 .iter()
                 .any(|known| extension.eq_ignore_ascii_case(known))
         })
 }
 
-fn ignored_path(relative: &Path) -> bool {
+fn ignored_path(root: &Path, relative: &Path) -> bool {
+    let mut folder = root.to_path_buf();
     relative.starts_with(".git")
         || relative.starts_with("target")
         // Lake's builds and fetched Lean packages.
         || relative.starts_with(".lake")
-        || relative.starts_with(Path::new("web").join("dist"))
-        || relative
-            .components()
-            .any(|component| matches!(component, Component::Normal(name) if name == "node_modules"))
+        // Dependencies anywhere, and a JavaScript package's build output.
+        || relative.components().any(|component| {
+            let Component::Normal(name) = component else {
+                return false;
+            };
+            let ignored = name == "node_modules"
+                || (name == "dist" && folder.join("package.json").is_file());
+            folder.push(name);
+            ignored
+        })
 }
 
 #[cfg(test)]
@@ -131,6 +141,26 @@ mod tests {
     fn filters_for_inputs_that_change_the_workspace() {
         let root = Path::new("/workspace");
         assert!(workspace_input(root, Path::new("/workspace/src/lib.rs")));
+        assert!(workspace_input(
+            root,
+            Path::new("/workspace/web/src/App.jsx")
+        ));
+        assert!(!workspace_input(
+            root,
+            Path::new("/workspace/web/node_modules/react/index.js")
+        ));
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join("web")).unwrap();
+        std::fs::write(project.path().join("web/package.json"), "{}").unwrap();
+        // A package's build output is ignored; a Rust module named `dist` is not.
+        assert!(!workspace_input(
+            project.path(),
+            &project.path().join("web/dist/assets/index.js")
+        ));
+        assert!(workspace_input(
+            project.path(),
+            &project.path().join("src/dist/mod.rs")
+        ));
         assert!(workspace_input(
             root,
             Path::new("/workspace/src/server/quint/saving.qnt")

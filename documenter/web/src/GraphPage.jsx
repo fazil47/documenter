@@ -3,6 +3,7 @@ import cytoscape from "cytoscape";
 import elk from "cytoscape-elk";
 
 import { routes } from "./api.js";
+import LanguageIcon from "./LanguageIcon.jsx";
 import { focusPositions, graphElements, oracleElements, shownModule } from "./graph.js";
 
 cytoscape.use(elk);
@@ -18,12 +19,15 @@ const layoutOptions = {
     "elk.direction": "RIGHT",
     "elk.hierarchyHandling": "INCLUDE_CHILDREN",
     "elk.layered.spacing.nodeNodeBetweenLayers": "72",
-    "elk.spacing.nodeNode": "38",
+    // Crates and packages are far apart, so separate graphs read as separate.
+    "elk.spacing.nodeNode": "120",
     "elk.edgeRouting": "ORTHOGONAL",
   },
   // Cytoscape pads each group's box and draws its label above it, which ELK
   // does not know about; the same room in ELK keeps groups and labels apart.
-  nodeLayoutOptions: (node) => (node.isParent() ? { "elk.padding": "[top=60,left=32,bottom=32,right=32]" } : {}),
+  nodeLayoutOptions: (node) => (node.isParent()
+    ? { "elk.padding": "[top=60,left=32,bottom=32,right=32]", "elk.spacing.nodeNode": "38" }
+    : {}),
 };
 
 // Moving between the full graph and a focused one animates node positions.
@@ -215,15 +219,10 @@ function graphStyle() {
       },
     },
     {
+      // Labelled by an HTML overlay with the language's icon (see GraphPage).
       selector: "node[box]",
       style: {
         shape: "round-rectangle",
-        label: "data(label)",
-        "text-valign": "top",
-        "text-halign": "left",
-        "font-size": 13,
-        "font-weight": 700,
-        color: color("--text-muted"),
         padding: "28px",
         "background-color": color("--surface"),
         "background-opacity": 0.72,
@@ -285,6 +284,8 @@ export default function GraphPage({ workspace }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
   const cardRef = useRef(null);
+  // Each crate, package or module box's label overlay, by box id.
+  const labelsRef = useRef(new Map());
   // Node positions in the full graph, to return to when leaving focus.
   const home = useRef(null);
   const [query, setQuery] = useState("");
@@ -292,6 +293,11 @@ export default function GraphPage({ workspace }) {
   const [readyGraph, setReadyGraph] = useState(null);
   const [focus, setFocus] = useState(focusFromUrl);
   const [view, setView] = useState(viewFromUrl);
+  const elements = useMemo(
+    () => (view === "oracles" ? oracleElements(workspace) : graphElements(workspace)),
+    [workspace, view],
+  );
+  const boxes = useMemo(() => elements.filter((element) => element.data.box).map((element) => element.data), [elements]);
   // Every oracle, with the module it sits beside and the module node showing that one.
   const oracles = useMemo(() => workspace.modules.flatMap((module) => module.oracles.map((oracle) => ({
     ...oracle,
@@ -340,7 +346,7 @@ export default function GraphPage({ workspace }) {
     if (!containerRef.current) return undefined;
     const graph = cytoscape({
       container: containerRef.current,
-      elements: view === "oracles" ? oracleElements(workspace) : graphElements(workspace),
+      elements,
       minZoom: 0.15,
       maxZoom: 3,
       wheelSensitivity: 0.18,
@@ -353,6 +359,19 @@ export default function GraphPage({ workspace }) {
     });
     // Keeps the card over the focused node while panning, zooming, and animating.
     graph.on("render", () => {
+      // Box labels sit above their boxes, and hide with them in focus mode and
+      // while the graph is hidden for its first layout.
+      const laidOut = containerRef.current?.style.visibility !== "hidden";
+      for (const [id, label] of labelsRef.current) {
+        const box = graph.getElementById(id);
+        if (!laidOut || box.empty() || !box.visible() || box.hasClass("quiet")) {
+          label.style.display = "none";
+          continue;
+        }
+        const bounds = box.renderedBoundingBox({ includeLabels: false });
+        label.style.display = "";
+        label.style.transform = `translate(${bounds.x1}px, ${bounds.y1}px) scale(${graph.zoom()}) translateY(calc(-100% - 8px))`;
+      }
       const card = cardRef.current;
       const node = graph.$("node.focus");
       if (!card) return;
@@ -384,7 +403,7 @@ export default function GraphPage({ workspace }) {
       graphRef.current = null;
       graph.destroy();
     };
-  }, [workspace, view, focusOn]);
+  }, [elements, view, focusOn]);
 
   // Before paint, so a page opened already focused never shows the full graph.
   useLayoutEffect(() => {
@@ -395,6 +414,8 @@ export default function GraphPage({ workspace }) {
     const animate = graph.scratch("shown") === true;
     graph.scratch("shown", true);
     containerRef.current.style.visibility = "";
+    // Shows the box labels, which stay hidden until now (see the render handler).
+    graph.emit("render");
     const node = focus ? graph.getElementById(focus) : graph.collection();
     if (node.empty()) {
       if (!home.current) return;
@@ -469,6 +490,20 @@ export default function GraphPage({ workspace }) {
       )}
       <div className="graph-stage">
         <div className="graph-canvas" ref={containerRef} aria-label={view === "oracles" ? "Oracle import graph" : "Module dependency graph"} />
+        {boxes.map((box) => (
+          <div
+            key={box.id}
+            className="box-label"
+            style={{ display: "none" }}
+            ref={(label) => {
+              if (label) labelsRef.current.set(box.id, label);
+              else labelsRef.current.delete(box.id);
+            }}
+          >
+            <LanguageIcon language={box.language} />
+            {box.label}
+          </div>
+        ))}
         <section className="focus-card" ref={cardRef} style={{ display: "none", width: CARD.width, height: CARD.height }}>
           {card && (
             <>

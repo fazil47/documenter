@@ -6,11 +6,28 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
+/// What one language's analysis finds: its modules, the dependencies between
+/// them, and problems such as files that failed to parse.
+pub(super) struct Analysis {
+    pub(super) modules: Vec<Module>,
+    pub(super) edges: Vec<Edge>,
+    pub(super) warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum Language {
+    Rust,
+    JavaScript,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct Module {
     pub(super) id: String,
+    /// The Rust crate, or the JavaScript package.
     pub(super) crate_name: String,
     pub(super) name: String,
+    pub(super) language: Language,
     pub(super) docs: String,
     pub(super) folded: bool,
     pub(super) items: Vec<ApiItem>,
@@ -51,12 +68,16 @@ impl std::fmt::Display for ApiItem {
     }
 }
 
-/// A test function in a module or in its test-only submodules, such as
-/// `#[cfg(test)] mod tests`, including those a `proptest!` block declares.
+/// A test of a module: in Rust a test function in the module or its test-only
+/// submodules, such as `#[cfg(test)] mod tests`, including those a `proptest!`
+/// block declares; in JavaScript an `it` or `test` call in a test file.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Test {
     pub(super) name: String,
-    /// Where its name is, in the file the module is declared in.
+    /// The test's own file, relative to the workspace root, when it is not
+    /// the module's (JavaScript test files).
+    pub(super) file: Option<String>,
+    /// Where it starts, in its own file or else the module's.
     pub(super) line: usize,
     /// Whether it checks a property on generated inputs.
     pub(super) property: bool,
@@ -70,6 +91,10 @@ impl Test {
 
     pub(crate) fn line(&self) -> usize {
         self.line
+    }
+
+    pub(crate) fn file(&self) -> Option<&str> {
+        self.file.as_deref()
     }
 
     pub(crate) fn is_property(&self) -> bool {
