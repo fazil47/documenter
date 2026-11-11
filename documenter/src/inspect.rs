@@ -113,6 +113,43 @@ fn module(workspace: &Workspace, notes: &anyhow::Result<Notes>, id: &str) -> Str
         }
         out.push('\n');
     }
+    let tests = workspace.tests(id);
+    if !tests.is_empty() {
+        out.push_str("tests (line):\n");
+        for test in tests {
+            let kind = if test.is_property() {
+                " [property]"
+            } else {
+                ""
+            };
+            let _ = write!(out, "  {} ({}){kind}", test.name(), test.line());
+            if !test.summary().is_empty() {
+                let _ = write!(out, "  {}", test.summary());
+            }
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    for (label, specs) in [
+        ("state models", workspace.state_models(id)),
+        ("oracles", workspace.oracles(id)),
+    ] {
+        if specs.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "{label}:");
+        for spec in specs {
+            let _ = write!(out, "  {}", spec.path());
+            if !spec.summary().is_empty() {
+                let _ = write!(out, "  {}", spec.summary());
+            }
+            if !spec.imports().is_empty() {
+                let _ = write!(out, " (imports {})", spec.imports().join(", "));
+            }
+            out.push('\n');
+        }
+        out.push('\n');
+    }
     list(&mut out, "submodules", &workspace.children(id));
     list(&mut out, "uses", &workspace.uses(id));
     list(&mut out, "used by", &workspace.used_by(id));

@@ -3,7 +3,7 @@ import cytoscape from "cytoscape";
 import elk from "cytoscape-elk";
 
 import { routes } from "./api.js";
-import { focusPositions, graphElements } from "./graph.js";
+import { focusOracles, focusPositions, graphElements, oraclePositions, oracleRoutes } from "./graph.js";
 
 cytoscape.use(elk);
 
@@ -55,9 +55,39 @@ function curveThrough(source, target, points) {
   };
 }
 
-// Lays out `node` and its dependencies in columns from the left, then moves the
-// nodes and the view there together, animated unless `animate` is false.
-function focusLayout(graph, node, kept, animate) {
+// Adds the oracles for the modules on screen in a row below them, with their
+// imports and dotted links to the modules they cover. Returns their positions
+// and sizes, and the points their links pass through.
+function addOracles(graph, workspace, kept, end, sizes) {
+  const { oracles, imports } = focusOracles(workspace, new Set(kept.nodes().map((each) => each.id())));
+  if (oracles.length === 0) return { positions: {}, sizes: {}, points: [] };
+  const added = graph.add([
+    ...oracles.map((oracle) => ({ group: "nodes", data: { id: oracle.id, label: oracle.label, oracle: true, owner: oracle.owner } })),
+    ...imports.map(([source, target]) => ({ group: "edges", data: { id: `${source} imports ${target}`, source, target, imports: true } })),
+    ...oracles.filter((oracle) => oracle.covers).map((oracle) => ({
+      group: "edges",
+      data: { id: `${oracle.id} covers`, source: oracle.id, target: oracle.covers, covers: true },
+    })),
+  ]);
+  const oracleSizes = Object.fromEntries(added.nodes().map((each) => [each.id(), { width: each.outerWidth(), height: each.outerHeight() }]));
+  const bottom = Math.max(...Object.entries(end).map(([id, { y }]) => y + sizes[id].height / 2));
+  const positions = oraclePositions(oracles, imports, end, oracleSizes, bottom);
+  const routes = oracleRoutes(oracles, imports, { ...end, ...positions }, { ...sizes, ...oracleSizes });
+  const at = (id) => positions[id] ?? end[id];
+  graph.batch(() => {
+    added.nodes().forEach((each) => each.position(positions[each.id()]));
+    for (const edge of added.edges()) {
+      const route = routes.get(edge.id());
+      if (route) edge.style(curveThrough(at(edge.source().id()), at(edge.target().id()), route));
+    }
+  });
+  return { positions, sizes: oracleSizes, points: [...routes.values()].flat() };
+}
+
+// Lays out `node` and its dependencies in columns from the left, with the
+// oracles covering them below, then moves the nodes and the view there
+// together, animated unless `animate` is false.
+function focusLayout(graph, workspace, node, kept, animate) {
   interrupt(graph);
   const nodes = kept.nodes().not(":parent");
   const sizes = Object.fromEntries(nodes.map((each) => [each.id(), { width: each.outerWidth(), height: each.outerHeight() }]));
@@ -75,12 +105,21 @@ function focusLayout(graph, node, kept, animate) {
       if (route) edge.addClass("routed").style(curveThrough(end[edge.source().id()], end[edge.target().id()], route));
     }
   });
+  const oracles = addOracles(graph, workspace, kept, end, sizes);
   const box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
-  for (const [id, { x, y }] of Object.entries(end)) {
-    box.x1 = Math.min(box.x1, x - sizes[id].width / 2);
-    box.x2 = Math.max(box.x2, x + sizes[id].width / 2);
-    box.y1 = Math.min(box.y1, y - sizes[id].height / 2);
-    box.y2 = Math.max(box.y2, y + sizes[id].height / 2);
+  for (const [placed, measured] of [[end, sizes], [oracles.positions, oracles.sizes]]) {
+    for (const [id, { x, y }] of Object.entries(placed)) {
+      box.x1 = Math.min(box.x1, x - measured[id].width / 2);
+      box.x2 = Math.max(box.x2, x + measured[id].width / 2);
+      box.y1 = Math.min(box.y1, y - measured[id].height / 2);
+      box.y2 = Math.max(box.y2, y + measured[id].height / 2);
+    }
+  }
+  for (const { x, y } of oracles.points) {
+    box.x1 = Math.min(box.x1, x);
+    box.x2 = Math.max(box.x2, x);
+    box.y1 = Math.min(box.y1, y);
+    box.y2 = Math.max(box.y2, y);
   }
   const width = graph.width();
   const height = graph.height();
@@ -98,6 +137,7 @@ function focusLayout(graph, node, kept, animate) {
 
 // Undoes what focusing changed on the graph's elements.
 function clearFocus(graph) {
+  graph.remove("node[?oracle]");
   graph.edges(".routed").removeStyle();
   graph.elements().removeClass("hidden focus quiet direct cycle routed");
 }
@@ -194,6 +234,34 @@ function graphStyle() {
       selector: "edge.direct",
       style: { "curve-style": "bezier", opacity: 0.85 },
     },
+    // Focus mode's oracles: Lean files, linked to what they import and cover.
+    {
+      selector: "node[?oracle]",
+      style: {
+        shape: "round-rectangle",
+        width: "label",
+        height: 28,
+        padding: "12px",
+        label: "data(label)",
+        "font-family": "IBM Plex Mono, ui-monospace, monospace",
+        "font-size": 11,
+        color: color("--text"),
+        "background-color": color("--surface"),
+        "border-color": color("--accent"),
+        "border-width": 1,
+        "border-style": "dashed",
+        "text-valign": "center",
+        "text-halign": "center",
+      },
+    },
+    {
+      selector: "edge[?imports]",
+      style: { "curve-style": "bezier", "line-color": color("--accent"), "target-arrow-color": color("--accent"), opacity: 0.8 },
+    },
+    {
+      selector: "edge[?covers]",
+      style: { "curve-style": "bezier", "line-style": "dotted", "target-arrow-shape": "none", "line-color": color("--accent"), opacity: 0.6 },
+    },
     {
       selector: "edge.cycle",
       style: { "line-style": "dashed", "line-dash-pattern": [6, 4] },
@@ -264,6 +332,9 @@ export default function GraphPage({ workspace }) {
       layout: { name: "preset" },
     });
     graph.on("tap", "node[moduleId]", (event) => focusOn(event.target.data("moduleId")));
+    graph.on("tap", "node[?oracle]", (event) => {
+      window.location.assign(`${routes.module(event.target.data("owner"))}#oracles`);
+    });
     graph.on("tap", (event) => {
       if (event.target === graph) focusOn(null);
     });
@@ -326,8 +397,8 @@ export default function GraphPage({ workspace }) {
       kept.nodes().ancestors().addClass("quiet");
       node.addClass("focus");
     });
-    focusLayout(graph, node, kept, animate);
-  }, [focus, readyGraph]);
+    focusLayout(graph, workspace, node, kept, animate);
+  }, [focus, readyGraph, workspace]);
 
   function search(event) {
     event.preventDefault();

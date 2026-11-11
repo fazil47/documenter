@@ -11,7 +11,7 @@ use syn::{
 
 use super::cargo::Package;
 use super::cfg::{self, CfgSet};
-use super::model::{ApiItem, Edge, Module, summary};
+use super::model::{ApiItem, Edge, Module, Test, summary};
 
 pub(super) struct Analysis {
     pub(super) modules: Vec<Module>,
@@ -104,13 +104,25 @@ impl<'a> ContextState<'a> {
             Err(error) => {
                 self.warnings
                     .push(format!("failed to parse {}: {error}", file_path.display()));
-                self.insert_file_module(module_id, file_path, declaration_docs, Vec::new());
+                self.insert_file_module(
+                    module_id,
+                    file_path,
+                    declaration_docs,
+                    Vec::new(),
+                    Vec::new(),
+                );
                 return Ok(());
             }
         };
 
         let docs = combine_docs(&declaration_docs, &doc_text(&parsed.attrs));
-        self.insert_file_module(module_id, file_path, docs, public_items(&parsed.items, cfg));
+        self.insert_file_module(
+            module_id,
+            file_path,
+            docs,
+            public_items(&parsed.items, cfg),
+            tests(&parsed.items, cfg),
+        );
         self.uses
             .entry(module_id.to_owned())
             .or_default()
@@ -140,7 +152,7 @@ impl<'a> ContextState<'a> {
         let docs = doc_text(&item.attrs);
 
         if let Some((_, items)) = &item.content {
-            self.insert_inline_module(&id, docs, public_items(items, cfg));
+            self.insert_inline_module(&id, docs, public_items(items, cfg), tests(items, cfg));
             self.uses
                 .entry(id.clone())
                 .or_default()
@@ -160,7 +172,7 @@ impl<'a> ContextState<'a> {
             self.warnings.push(format!(
                 "module `{id}` was declared but no source file was found"
             ));
-            self.insert_inline_module(&id, docs, Vec::new());
+            self.insert_inline_module(&id, docs, Vec::new(), Vec::new());
         }
         Ok(())
     }
@@ -171,6 +183,7 @@ impl<'a> ContextState<'a> {
         file_path: &Path,
         docs: String,
         items: Vec<ApiItem>,
+        tests: Vec<Test>,
     ) {
         self.modules.insert(
             id.to_owned(),
@@ -181,12 +194,21 @@ impl<'a> ContextState<'a> {
                 docs,
                 folded: false,
                 items,
+                tests,
+                state_models: Vec::new(),
+                oracles: Vec::new(),
                 source_path: Some(file_path.to_path_buf()),
             },
         );
     }
 
-    fn insert_inline_module(&mut self, id: &str, docs: String, items: Vec<ApiItem>) {
+    fn insert_inline_module(
+        &mut self,
+        id: &str,
+        docs: String,
+        items: Vec<ApiItem>,
+        tests: Vec<Test>,
+    ) {
         self.modules.entry(id.to_owned()).or_insert_with(|| Module {
             id: id.to_owned(),
             crate_name: crate_name(id).to_owned(),
@@ -194,6 +216,9 @@ impl<'a> ContextState<'a> {
             docs,
             folded: false,
             items,
+            tests,
+            state_models: Vec::new(),
+            oracles: Vec::new(),
             source_path: None,
         });
     }
@@ -223,12 +248,99 @@ impl<'a> ContextState<'a> {
     }
 }
 
-fn module_directory(file_path: &Path) -> PathBuf {
+/// Where a module file's submodules, and the specs beside it, live.
+pub(super) fn module_directory(file_path: &Path) -> PathBuf {
     let parent = file_path.parent().unwrap_or_else(|| Path::new("."));
     match file_path.file_stem().and_then(|stem| stem.to_str()) {
         Some("lib" | "main" | "mod") | None => parent.to_path_buf(),
         Some(stem) => parent.join(stem),
     }
+}
+
+/// The tests among `items`: `#[test]` functions (also `#[tokio::test]` and the
+/// like), those in `proptest!` blocks, and those in inline submodules left out
+/// of the graph, such as `#[cfg(test)] mod tests { ... }`, and anything nested
+/// in them. Test modules in files of their own are not read.
+fn tests(items: &[Item], cfg: &CfgSet) -> Vec<Test> {
+    collect_tests(items, cfg, false)
+}
+
+fn collect_tests(items: &[Item], cfg: &CfgSet, in_test_module: bool) -> Vec<Test> {
+    let mut found = Vec::new();
+    for item in items {
+        match item {
+            Item::Fn(function) if function.attrs.iter().any(is_test_attribute) => {
+                found.push(Test {
+                    name: function.sig.ident.to_string(),
+                    line: function.sig.ident.span().start().line,
+                    property: false,
+                    summary: summary(&doc_text(&function.attrs)),
+                });
+            }
+            Item::Mod(module) if in_test_module || !cfg::active(cfg, &module.attrs) => {
+                if let Some((_, items)) = &module.content {
+                    found.extend(collect_tests(items, cfg, true));
+                }
+            }
+            Item::Macro(call)
+                if call
+                    .mac
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "proptest") =>
+            {
+                found.extend(property_tests(call.mac.tokens.clone()));
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+fn is_test_attribute(attribute: &Attribute) -> bool {
+    attribute
+        .path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "test")
+}
+
+/// The functions a `proptest! { ... }` block declares, with their docs. Their
+/// parameters are not Rust syntax, so the block is read token by token.
+fn property_tests(tokens: proc_macro2::TokenStream) -> Vec<Test> {
+    use proc_macro2::TokenTree;
+    let mut found = Vec::new();
+    let mut docs = Vec::new();
+    let mut tokens = tokens.into_iter().peekable();
+    while let Some(token) = tokens.next() {
+        match token {
+            TokenTree::Group(group) if group.delimiter() == proc_macro2::Delimiter::Bracket => {
+                if let Ok(syn::MetaNameValue { path, value, .. }) = syn::parse2(group.stream())
+                    && path.is_ident("doc")
+                    && let Expr::Lit(syn::ExprLit {
+                        lit: Lit::Str(text),
+                        ..
+                    }) = value
+                {
+                    docs.push(text.value());
+                }
+            }
+            TokenTree::Ident(keyword) if keyword == "fn" => {
+                if let Some(TokenTree::Ident(name)) = tokens.peek() {
+                    found.push(Test {
+                        name: name.to_string(),
+                        line: name.span().start().line,
+                        property: true,
+                        summary: summary(&docs.join("\n")),
+                    });
+                }
+                docs.clear();
+            }
+            _ => {}
+        }
+    }
+    found
 }
 
 fn resolve_module_file(base: &Path, name: &str) -> Option<PathBuf> {
@@ -634,6 +746,51 @@ mod tests {
             }
             modules.into_iter().collect()
         })
+    }
+
+    #[test]
+    fn finds_tests_property_tests_and_nested_test_modules() {
+        let file = syn::parse_file(
+            r#"
+            #[test]
+            fn plain() {}
+            #[cfg(test)]
+            mod tests {
+                #[tokio::test]
+                async fn asynchronous() {}
+                mod nested {
+                    #[test]
+                    fn deep() {}
+                }
+                proptest! {
+                    /// Holds.
+                    #[test]
+                    fn holds(x in 0..3) { fn helper() {} }
+                }
+            }
+            fn not_a_test() {}
+            "#,
+        )
+        .unwrap();
+        let cfg = CfgSet::for_target(None).unwrap();
+        let found = tests(&file.items, &cfg)
+            .into_iter()
+            .map(|test| (test.name, test.property, test.summary))
+            .collect::<Vec<_>>();
+        let expected = [
+            ("plain", false, ""),
+            ("asynchronous", false, ""),
+            ("deep", false, ""),
+            ("holds", true, "Holds."),
+        ];
+        assert_eq!(
+            found,
+            expected.map(|(name, property, summary)| (
+                name.to_owned(),
+                property,
+                summary.to_owned()
+            ))
+        );
     }
 
     proptest! {

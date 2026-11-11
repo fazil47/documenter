@@ -1,6 +1,6 @@
 // Debouncing the watcher's file events (`debounce` in `watch.rs`).
 //
-// Each file event is a `Workspace` change (Rust sources, manifests, graph
+// Each file event is a `Workspace` change (Rust sources, specs, manifests, graph
 // settings) or a `Notes` change. Events closer together than the quiet period
 // form a burst, which is reported once the period passes: as `Workspace` if any
 // event in it was one, since analysing the workspace again also refreshes the

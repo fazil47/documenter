@@ -1,4 +1,5 @@
-//! Debounced change notifications for the workspace's sources and its notes.
+//! Debounced change notifications for the workspace's sources, the specs
+//! beside them, and its notes.
 
 use std::path::{Component, Path};
 use std::time::Duration;
@@ -9,7 +10,7 @@ use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Change {
-    /// Rust sources, manifests, or graph settings changed: analyze again.
+    /// Rust sources, specs, manifests, or graph settings changed: analyze again.
     Workspace,
     /// Only notes or their drawings changed.
     Notes,
@@ -101,14 +102,19 @@ fn workspace_input(root: &Path, path: &Path) -> bool {
     }
     path.file_name().is_some_and(|name| name == "Cargo.toml")
         || relative == Path::new(".documenter/config.toml")
-        || path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        // Rust sources, and the state models and oracles beside them.
+        || path.extension().is_some_and(|extension| {
+            ["rs", "qnt", "tla", "lean"]
+                .iter()
+                .any(|known| extension.eq_ignore_ascii_case(known))
+        })
 }
 
 fn ignored_path(relative: &Path) -> bool {
     relative.starts_with(".git")
         || relative.starts_with("target")
+        // Lake's builds and fetched Lean packages.
+        || relative.starts_with(".lake")
         || relative.starts_with(Path::new("web").join("dist"))
         || relative
             .components()
@@ -125,6 +131,10 @@ mod tests {
     fn filters_for_inputs_that_change_the_workspace() {
         let root = Path::new("/workspace");
         assert!(workspace_input(root, Path::new("/workspace/src/lib.rs")));
+        assert!(workspace_input(
+            root,
+            Path::new("/workspace/src/server/quint/saving.qnt")
+        ));
         assert!(workspace_input(
             root,
             Path::new("/workspace/.documenter/config.toml")

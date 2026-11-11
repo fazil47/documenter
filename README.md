@@ -24,8 +24,14 @@ cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build -p documenter_zed --target wasm32-wasip2
 npm --prefix documenter/web test
+npm --prefix documenter/web run models
 npm --prefix documenter/web audit --omit=dev
 ```
+
+The Rust tests compare parts of the analysis with Lean oracles, which need
+[Lean](https://lean-lang.org) (`brew install elan-init`); `lake build` checks
+the oracles' proofs. Without Lake, those comparisons are skipped. The Quint
+tools come with `npm ci`.
 
 ## Editor setup
 
@@ -62,7 +68,7 @@ browser. Module names are full ids or unique suffixes such as `server::watch`:
 
 ```sh
 documenter modules              # every module as a tree, with its file and summary
-documenter module server        # docs, public items with lines, dependencies, notes
+documenter module server        # docs, items, tests, specs, dependencies, notes
 documenter graph                # each module and the modules it uses
 documenter graph --json         # every module with its docs and items, and every edge
 documenter path lsp watch       # the shortest chain of dependencies between two modules
@@ -179,3 +185,25 @@ one of those keys explains why it is unavailable.
 The current analyzer intentionally follows `module-viz`: it supports Rust
 packages and explicit Cargo workspace members, but does not expand globbed
 workspace members yet.
+
+## Tests and specs
+
+A module's page lists its tests, including those in its inline `#[cfg(test)]`
+submodules (a test module in a file of its own is not read) and in `proptest!`
+blocks, which are marked as property tests. Files
+in folders beside a module's submodules specify it, and appear on its page:
+
+```text
+src/server.rs
+src/server/quint/note_saving.qnt      # a Quint state model (or tla/*.tla for TLA+)
+src/analysis/cfg.rs
+src/analysis/cfg/oracle/Cfg.lean      # a Lean oracle
+```
+
+A state model is a state machine whose invariants `npm run models` checks on
+random runs; it names an invariant `invariant`. An oracle defines in Lean what
+a module's results mean, with proofs about them; `lakefile.toml` at the root
+builds them, and property tests compare the Rust code with them. Oracles import
+each other, and focus mode draws the oracles of the modules on screen below
+them, with their imports and dotted links to the modules they cover. Each
+file's leading comment is its summary.

@@ -7,6 +7,7 @@ mod lean_oracle;
 mod model;
 mod rust;
 mod settings;
+mod specs;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde::Serialize;
 
-use self::model::{ApiItem, Edge, Module, summary};
+use self::model::{ApiItem, Edge, Module, Spec, Test, summary};
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Workspace {
@@ -45,6 +46,7 @@ impl Workspace {
         for module in &mut analysis.modules {
             module.folded = module.id.contains("::") && settings.folds(&module.name);
         }
+        specs::attach(&root, &mut analysis.modules);
         Ok(Self {
             root,
             modules: analysis.modules,
@@ -110,6 +112,24 @@ impl Workspace {
     pub(crate) fn items(&self, module_id: &str) -> &[ApiItem] {
         self.module(module_id)
             .map_or(&[], |module| module.items.as_slice())
+    }
+
+    /// A module's tests, including those in its test-only submodules.
+    pub(crate) fn tests(&self, module_id: &str) -> &[Test] {
+        self.module(module_id)
+            .map_or(&[], |module| module.tests.as_slice())
+    }
+
+    /// The Quint and TLA+ state models beside a module.
+    pub(crate) fn state_models(&self, module_id: &str) -> &[Spec] {
+        self.module(module_id)
+            .map_or(&[], |module| module.state_models.as_slice())
+    }
+
+    /// The Lean oracles beside a module.
+    pub(crate) fn oracles(&self, module_id: &str) -> &[Spec] {
+        self.module(module_id)
+            .map_or(&[], |module| module.oracles.as_slice())
     }
 
     /// The modules `module_id` depends on.
@@ -237,6 +257,9 @@ mod tests {
                             docs: String::new(),
                             folded: false,
                             items: Vec::new(),
+                            tests: Vec::new(),
+                            state_models: Vec::new(),
+                            oracles: Vec::new(),
                             source_path: None,
                         })
                         .collect(),

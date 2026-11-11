@@ -1,6 +1,6 @@
-//! The analysis's data: modules, the dependency edges between them, and the
-//! items each module exposes. The walk in `rust` builds them; `Workspace` answers
-//! questions about them.
+//! The analysis's data: modules, the dependency edges between them, and what
+//! each module exposes, tests, and is specified by. The walk in `rust` and the
+//! search in `specs` build them; `Workspace` answers questions about them.
 
 use std::path::PathBuf;
 
@@ -14,6 +14,9 @@ pub(super) struct Module {
     pub(super) docs: String,
     pub(super) folded: bool,
     pub(super) items: Vec<ApiItem>,
+    pub(super) tests: Vec<Test>,
+    pub(super) state_models: Vec<Spec>,
+    pub(super) oracles: Vec<Spec>,
     #[serde(rename = "file_backed", serialize_with = "serialize_is_some")]
     pub(super) source_path: Option<PathBuf>,
 }
@@ -45,6 +48,64 @@ impl ApiItem {
 impl std::fmt::Display for ApiItem {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{} {} {}", self.visibility, self.kind, self.name)
+    }
+}
+
+/// A test function in a module or in its test-only submodules, such as
+/// `#[cfg(test)] mod tests`, including those a `proptest!` block declares.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct Test {
+    pub(super) name: String,
+    /// Where its name is, in the file the module is declared in.
+    pub(super) line: usize,
+    /// Whether it checks a property on generated inputs.
+    pub(super) property: bool,
+    pub(super) summary: String,
+}
+
+impl Test {
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub(crate) fn line(&self) -> usize {
+        self.line
+    }
+
+    pub(crate) fn is_property(&self) -> bool {
+        self.property
+    }
+
+    /// The first paragraph of its docs.
+    pub(crate) fn summary(&self) -> &str {
+        &self.summary
+    }
+}
+
+/// A file beside a module that specifies it: a Quint or TLA+ state model, or a
+/// Lean oracle.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct Spec {
+    /// Relative to the workspace root.
+    pub(super) path: String,
+    /// The first paragraph of its leading comment.
+    pub(super) summary: String,
+    pub(super) source: String,
+    /// The paths of the workspace's specs it imports.
+    pub(super) imports: Vec<String>,
+}
+
+impl Spec {
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub(crate) fn summary(&self) -> &str {
+        &self.summary
+    }
+
+    pub(crate) fn imports(&self) -> &[String] {
+        &self.imports
     }
 }
 
