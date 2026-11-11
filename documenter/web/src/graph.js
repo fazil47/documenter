@@ -9,6 +9,12 @@ function visibleNode(id, folded) {
   return current;
 }
 
+// The module whose node shows module `id` in the module graph: itself, or the
+// nearest parent it is folded into.
+export function shownModule(workspace, id) {
+  return visibleNode(id, new Set(workspace.modules.filter((module) => module.folded).map((module) => module.id)));
+}
+
 export function graphElements(workspace) {
   const folded = new Set(
     workspace.modules.filter((module) => module.folded).map((module) => module.id),
@@ -18,12 +24,12 @@ export function graphElements(workspace) {
   );
   const crates = [...new Set(workspace.modules.map((module) => module.crate_name))];
   const parents = crates.map((name) => ({
-    data: { id: `__crate__${name}`, label: name, crateGroup: true },
+    data: { id: `__crate__${name}`, label: name, box: true },
   }));
   const modules = visibleModules.map((module) => ({
     data: {
       id: module.id,
-      moduleId: module.id,
+      item: module.id,
       label: module.id === module.crate_name ? "crate root" : module.name,
       parent: `__crate__${module.crate_name}`,
       fileBacked: module.file_backed,
@@ -129,56 +135,22 @@ export function focusPositions(focus, edges, sizes, { columnGap = 110, rowGap = 
   return { positions, cycles, routes };
 }
 
-// The oracles focus mode shows for the modules on screen (`kept`, node ids):
-// those beside any of them, and the oracles those import, transitively. Each
-// has an id, a label, and the module it sits beside (`owner`); `imports` are
-// [importer, imported] ids.
-export function focusOracles(workspace, kept) {
-  const folded = new Set(workspace.modules.filter((module) => module.folded).map((module) => module.id));
-  const byPath = new Map();
+// The oracle graph: every Lean oracle, boxed by the module it sits beside, with
+// an edge for each import. An oracle's id and item are its path.
+export function oracleElements(workspace) {
+  const groups = [];
+  const oracles = [];
+  const edges = [];
   for (const module of workspace.modules) {
-    for (const oracle of module.oracles ?? []) byPath.set(oracle.path, { oracle, owner: module.id });
+    if (module.oracles.length === 0) continue;
+    const parent = `__module__${module.id}`;
+    groups.push({ data: { id: parent, label: module.id, box: true } });
+    for (const oracle of module.oracles) {
+      oracles.push({ data: { id: oracle.path, item: oracle.path, label: oracle.path.split("/").pop(), parent } });
+      for (const imported of oracle.imports) {
+        edges.push({ data: { id: `${oracle.path} -> ${imported}`, source: oracle.path, target: imported } });
+      }
+    }
   }
-  const shown = new Set();
-  const visit = (path) => {
-    if (shown.has(path) || !byPath.has(path)) return;
-    shown.add(path);
-    for (const imported of byPath.get(path).oracle.imports) visit(imported);
-  };
-  for (const [path, { owner }] of byPath) {
-    if (kept.has(visibleNode(owner, folded))) visit(path);
-  }
-  const id = (path) => `oracle:${path}`;
-  const oracles = [...shown].sort().map((path) => ({
-    id: id(path),
-    label: path.split("/").pop(),
-    owner: byPath.get(path).owner,
-  }));
-  const imports = [...shown].flatMap((path) =>
-    byPath.get(path).oracle.imports.filter((imported) => shown.has(imported)).map((imported) => [id(path), id(imported)]));
-  return { oracles, imports };
-}
-
-// Positions for focus mode's oracles, laid out like the modules: each oracle
-// left of the oracles it imports, in columns. The band's top left corner is at
-// `left`, `top`. Returns positions and the points long imports pass through.
-export function oracleLayout(oracles, imports, sizes, { left, top }) {
-  // Every oracle no other one imports hangs off a root, which is then dropped.
-  const root = "\0oracles";
-  const imported = new Set(imports.map(([, target]) => target));
-  const edges = [
-    ...oracles.filter((oracle) => !imported.has(oracle.id)).map((oracle) => [root, oracle.id]),
-    ...imports,
-  ];
-  const laid = focusPositions(root, edges, { ...sizes, [root]: { width: 0, height: 0 } });
-  delete laid.positions[root];
-  const ids = Object.keys(laid.positions);
-  const dx = left - Math.min(...ids.map((id) => laid.positions[id].x - sizes[id].width / 2));
-  const dy = top - Math.min(...ids.map((id) => laid.positions[id].y - sizes[id].height / 2));
-  const move = ({ x, y }) => ({ x: x + dx, y: y + dy });
-  const positions = Object.fromEntries(ids.map((id) => [id, move(laid.positions[id])]));
-  const routes = new Map(
-    [...laid.routes].filter(([key]) => !key.startsWith(root)).map(([key, points]) => [key, points.map(move)]),
-  );
-  return { positions, routes };
+  return [...groups, ...oracles, ...edges];
 }

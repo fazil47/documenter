@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { focusOracles, focusPositions, graphElements, oracleLayout } from "./graph.js";
+import { focusPositions, graphElements, oracleElements } from "./graph.js";
 
 describe("graphElements", () => {
   it("contracts folded modules into their nearest visible parents", () => {
@@ -23,8 +23,8 @@ describe("graphElements", () => {
 
     const elements = graphElements(workspace);
     const nodes = elements
-      .filter((element) => element.data.moduleId)
-      .map((element) => element.data.moduleId);
+      .filter((element) => element.data.item)
+      .map((element) => element.data.item);
     const edges = elements
       .filter((element) => element.data.source)
       .map((element) => [element.data.source, element.data.target]);
@@ -47,7 +47,7 @@ describe("graphElements", () => {
     };
 
     const elements = graphElements(workspace);
-    expect(elements.filter((element) => element.data.moduleId)).toHaveLength(1);
+    expect(elements.filter((element) => element.data.item)).toHaveLength(1);
     expect(elements.filter((element) => element.data.source)).toHaveLength(0);
   });
 
@@ -60,13 +60,13 @@ describe("graphElements", () => {
     const elements = graphElements(workspace);
     const container = elements.find((element) => element.data.id === "__crate__engine");
     const nodes = elements
-      .filter((element) => element.data.moduleId)
-      .map((element) => element.data.moduleId);
+      .filter((element) => element.data.item)
+      .map((element) => element.data.item);
     const edges = elements
       .filter((element) => element.data.source)
       .map((element) => [element.data.source, element.data.target]);
 
-    expect(container.data.moduleId).toBeUndefined();
+    expect(container.data.item).toBeUndefined();
     expect(nodes).toEqual(["engine", "engine::render"]);
     expect(edges).toEqual([
       ["engine", "engine::render"],
@@ -78,8 +78,8 @@ describe("graphElements", () => {
     const elements = graphElements({ modules: [module("app", false)], edges: [] });
     expect(
       elements
-        .filter((element) => element.data.moduleId)
-        .map((element) => element.data.moduleId),
+        .filter((element) => element.data.item)
+        .map((element) => element.data.item),
     ).toEqual(["app"]);
   });
 
@@ -99,8 +99,8 @@ describe("graphElements", () => {
     const elements = graphElements(workspace);
     expect(
       elements
-        .filter((element) => element.data.moduleId)
-        .map((element) => element.data.moduleId),
+        .filter((element) => element.data.item)
+        .map((element) => element.data.item),
     ).toEqual(["renderer_wgpu"]);
     expect(elements.filter((element) => element.data.source)).toHaveLength(0);
   });
@@ -239,37 +239,19 @@ describe("focusPositions properties", () => {
   });
 });
 
-describe("focus mode oracles", () => {
-  const workspace = {
-    modules: [
-      { id: "c", folded: false, oracles: [] },
-      { id: "c::query", folded: false, oracles: [{ path: "src/query/oracle/Query.lean", imports: ["src/model/oracle/Graph.lean"] }] },
-      { id: "c::model", folded: false, oracles: [{ path: "src/model/oracle/Graph.lean", imports: [] }] },
-      { id: "c::other", folded: false, oracles: [{ path: "src/other/oracle/Other.lean", imports: [] }] },
-    ],
-  };
-
-  it("shows oracles of modules on screen and what they import", () => {
-    const { oracles, imports } = focusOracles(workspace, new Set(["c", "c::query"]));
-    expect(oracles).toEqual([
-      { id: "oracle:src/model/oracle/Graph.lean", label: "Graph.lean", owner: "c::model" },
-      { id: "oracle:src/query/oracle/Query.lean", label: "Query.lean", owner: "c::query" },
+describe("oracleElements", () => {
+  it("boxes oracles by their module and links their imports", () => {
+    const elements = oracleElements({
+      modules: [
+        { id: "c", oracles: [] },
+        { id: "c::query", oracles: [{ path: "src/query/oracle/Query.lean", imports: ["src/query/oracle/Graph.lean"] }, { path: "src/query/oracle/Graph.lean", imports: [] }] },
+      ],
+    });
+    expect(elements.map((element) => element.data)).toEqual([
+      { id: "__module__c::query", label: "c::query", box: true },
+      { id: "src/query/oracle/Query.lean", item: "src/query/oracle/Query.lean", label: "Query.lean", parent: "__module__c::query" },
+      { id: "src/query/oracle/Graph.lean", item: "src/query/oracle/Graph.lean", label: "Graph.lean", parent: "__module__c::query" },
+      { id: "src/query/oracle/Query.lean -> src/query/oracle/Graph.lean", source: "src/query/oracle/Query.lean", target: "src/query/oracle/Graph.lean" },
     ]);
-    expect(imports).toEqual([["oracle:src/query/oracle/Query.lean", "oracle:src/model/oracle/Graph.lean"]]);
-  });
-
-  it("lays oracles out in a band, each left of what it imports", () => {
-    fc.assert(fc.property(focusGraph, ({ kept, edges, sizes }) => {
-      // Oracle imports never form cycles, so only keep edges to later oracles.
-      const imports = edges.filter(([source, target]) => source < target);
-      const oracles = [...kept].map((id) => ({ id }));
-      const { positions } = oracleLayout(oracles, imports, sizes, { left: 10, top: 500 });
-      expect(Object.keys(positions).sort()).toEqual([...kept].sort());
-      for (const [id, { x, y }] of Object.entries(positions)) {
-        expect(x - sizes[id].width / 2).toBeGreaterThanOrEqual(10 - 1e-9);
-        expect(y - sizes[id].height / 2).toBeGreaterThanOrEqual(500 - 1e-9);
-      }
-      for (const [source, target] of imports) expect(positions[source].x).toBeLessThan(positions[target].x);
-    }));
   });
 });

@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import cytoscape from "cytoscape";
 import elk from "cytoscape-elk";
 
 import { routes } from "./api.js";
-import { focusOracles, focusPositions, graphElements, oracleLayout } from "./graph.js";
+import { focusPositions, graphElements, oracleElements, shownModule } from "./graph.js";
 
 cytoscape.use(elk);
 
@@ -21,6 +21,9 @@ const layoutOptions = {
     "elk.spacing.nodeNode": "38",
     "elk.edgeRouting": "ORTHOGONAL",
   },
+  // Cytoscape pads each group's box and draws its label above it, which ELK
+  // does not know about; the same room in ELK keeps groups and labels apart.
+  nodeLayoutOptions: (node) => (node.isParent() ? { "elk.padding": "[top=60,left=32,bottom=32,right=32]" } : {}),
 };
 
 // Moving between the full graph and a focused one animates node positions.
@@ -55,42 +58,9 @@ function curveThrough(source, target, points) {
   };
 }
 
-// Gap between the modules and the band of oracles below them.
-const ORACLE_GAP = 80;
-
-// Adds the oracles for the modules on screen in a band below them, each
-// labelled with the module it sits beside, and arrows for their imports.
-// Returns their positions and sizes, and the points long imports pass through.
-function addOracles(graph, workspace, kept, end, sizes) {
-  const { oracles, imports } = focusOracles(workspace, new Set(kept.nodes().map((each) => each.id())));
-  if (oracles.length === 0) return { positions: {}, sizes: {}, points: [] };
-  const moduleName = (id) => id.split("::").pop();
-  const added = graph.add([
-    ...oracles.map((oracle) => ({
-      group: "nodes",
-      data: { id: oracle.id, label: `${oracle.label}\n${moduleName(oracle.owner)}`, oracle: true, owner: oracle.owner },
-    })),
-    ...imports.map(([source, target]) => ({ group: "edges", data: { id: `${source} imports ${target}`, source, target, imports: true } })),
-  ]);
-  const oracleSizes = Object.fromEntries(added.nodes().map((each) => [each.id(), { width: each.outerWidth(), height: each.outerHeight() }]));
-  const modules = Object.entries(end);
-  const left = Math.min(...modules.map(([id, { x }]) => x - sizes[id].width / 2));
-  const bottom = Math.max(...modules.map(([id, { y }]) => y + sizes[id].height / 2));
-  const { positions, routes } = oracleLayout(oracles, imports, oracleSizes, { left, top: bottom + ORACLE_GAP });
-  graph.batch(() => {
-    added.nodes().forEach((each) => each.position(positions[each.id()]));
-    for (const each of added.edges()) {
-      const route = routes.get(`${each.source().id()} -> ${each.target().id()}`);
-      if (route) each.style(curveThrough(positions[each.source().id()], positions[each.target().id()], route));
-    }
-  });
-  return { positions, sizes: oracleSizes, points: [...routes.values()].flat() };
-}
-
-// Lays out `node` and its dependencies in columns from the left, with the
-// oracles covering them below, then moves the nodes and the view there
-// together, animated unless `animate` is false.
-function focusLayout(graph, workspace, node, kept, animate) {
+// Lays out `node` and its dependencies in columns from the left, then moves the
+// nodes and the view there together, animated unless `animate` is false.
+function focusLayout(graph, node, kept, animate) {
   interrupt(graph);
   const nodes = kept.nodes().not(":parent");
   const sizes = Object.fromEntries(nodes.map((each) => [each.id(), { width: each.outerWidth(), height: each.outerHeight() }]));
@@ -108,21 +78,12 @@ function focusLayout(graph, workspace, node, kept, animate) {
       if (route) edge.addClass("routed").style(curveThrough(end[edge.source().id()], end[edge.target().id()], route));
     }
   });
-  const oracles = addOracles(graph, workspace, kept, end, sizes);
   const box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
-  for (const [placed, measured] of [[end, sizes], [oracles.positions, oracles.sizes]]) {
-    for (const [id, { x, y }] of Object.entries(placed)) {
-      box.x1 = Math.min(box.x1, x - measured[id].width / 2);
-      box.x2 = Math.max(box.x2, x + measured[id].width / 2);
-      box.y1 = Math.min(box.y1, y - measured[id].height / 2);
-      box.y2 = Math.max(box.y2, y + measured[id].height / 2);
-    }
-  }
-  for (const { x, y } of oracles.points) {
-    box.x1 = Math.min(box.x1, x);
-    box.x2 = Math.max(box.x2, x);
-    box.y1 = Math.min(box.y1, y);
-    box.y2 = Math.max(box.y2, y);
+  for (const [id, { x, y }] of Object.entries(end)) {
+    box.x1 = Math.min(box.x1, x - sizes[id].width / 2);
+    box.x2 = Math.max(box.x2, x + sizes[id].width / 2);
+    box.y1 = Math.min(box.y1, y - sizes[id].height / 2);
+    box.y2 = Math.max(box.y2, y + sizes[id].height / 2);
   }
   const width = graph.width();
   const height = graph.height();
@@ -140,21 +101,81 @@ function focusLayout(graph, workspace, node, kept, animate) {
 
 // Undoes what focusing changed on the graph's elements.
 function clearFocus(graph) {
-  graph.remove("node[?oracle]");
   graph.edges(".routed").removeStyle();
   graph.elements().removeClass("hidden focus quiet direct cycle routed");
 }
 
 // The focused module's node grows to this size, and an HTML card is drawn over it.
-const CARD = { width: 300, height: 128 };
+const CARD = { width: 300, height: 144 };
 
 function focusFromUrl() {
   return new URLSearchParams(window.location.search).get("focus");
 }
 
+// Which graph the page shows: the modules, or the Lean oracles (`?view=oracles`).
+function viewFromUrl() {
+  return new URLSearchParams(window.location.search).get("view") === "oracles" ? "oracles" : "modules";
+}
+
 // The first paragraph of a module's docs.
 function summary(docs) {
-  return (docs || "").trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ");
+  return (docs || "").trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ").replaceAll("`", "");
+}
+
+// The viewport that centers `box`, zoomed to fit but never past full size, so
+// a small graph is not blown up.
+function centeredView(graph, box) {
+  const fit = Math.min(1, (graph.width() - 2 * PADDING) / (box.x2 - box.x1), (graph.height() - 2 * PADDING) / (box.y2 - box.y1));
+  const zoom = Math.max(graph.minZoom(), fit);
+  return {
+    zoom,
+    pan: { x: (graph.width() - (box.x1 + box.x2) * zoom) / 2, y: (graph.height() - (box.y1 + box.y2) * zoom) / 2 },
+  };
+}
+
+function fitView(graph) {
+  graph.viewport(centeredView(graph, graph.elements(":visible").boundingBox()));
+}
+
+// The box around `nodes` if they were at `at`, positions by id.
+function boxAt(nodes, at) {
+  const box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+  for (const node of nodes) {
+    const { x, y } = at[node.id()];
+    box.x1 = Math.min(box.x1, x - node.outerWidth() / 2);
+    box.x2 = Math.max(box.x2, x + node.outerWidth() / 2);
+    box.y1 = Math.min(box.y1, y - node.outerHeight() / 2);
+    box.y2 = Math.max(box.y2, y + node.outerHeight() / 2);
+  }
+  return box;
+}
+
+// What the focus card shows for a module: its docs and links to its oracles,
+// and those of modules folded into it.
+function moduleCard(module, oracles) {
+  if (!module) return null;
+  return {
+    title: module.id === module.crate_name ? module.id : module.name,
+    summary: summary(module.docs) || "No module documentation.",
+    label: "Oracles:",
+    links: oracles.filter((oracle) => oracle.shown === module.id).map((oracle) => ({
+      text: oracle.path.split("/").pop(),
+      href: routes.graph({ view: "oracles", focus: oracle.path }),
+    })),
+    inspect: routes.module(module.id),
+  };
+}
+
+// What the focus card shows for an oracle: its summary and the module it is beside.
+function oracleCard(oracle) {
+  if (!oracle) return null;
+  return {
+    title: oracle.path.split("/").pop(),
+    summary: oracle.summary.replaceAll("`", "") || "No summary.",
+    label: "Beside:",
+    links: [{ text: oracle.owner, href: routes.graph({ focus: oracle.shown }) }],
+    inspect: `${routes.module(oracle.owner)}#oracles`,
+  };
 }
 
 // Cytoscape draws on a canvas, so it takes the stylesheet's theme colors as values.
@@ -168,7 +189,7 @@ function graphStyle() {
       style: { "active-bg-opacity": 0 },
     },
     {
-      selector: "node[moduleId]",
+      selector: "node[item]",
       style: {
         shape: "round-rectangle",
         width: "label",
@@ -194,7 +215,7 @@ function graphStyle() {
       },
     },
     {
-      selector: "node[crateGroup]",
+      selector: "node[box]",
       style: {
         shape: "round-rectangle",
         label: "data(label)",
@@ -229,40 +250,13 @@ function graphStyle() {
     },
     // Focus mode: crates are not boxed, and each edge is its own curve.
     {
-      selector: "node[crateGroup].quiet",
+      selector: "node[box].quiet",
       // Invisible and not grabbable, so pressing inside it acts on the background.
       style: { "background-opacity": 0, "border-width": 0, "text-opacity": 0, events: "no" },
     },
     {
       selector: "edge.direct",
       style: { "curve-style": "bezier", opacity: 0.85 },
-    },
-    // Focus mode's oracles: Lean files, linked to what they import and cover.
-    {
-      selector: "node[?oracle]",
-      style: {
-        shape: "round-rectangle",
-        width: "label",
-        height: 40,
-        padding: "12px",
-        label: "data(label)",
-        // The file, then the module it sits beside.
-        "text-wrap": "wrap",
-        "line-height": 1.4,
-        "font-family": "IBM Plex Mono, ui-monospace, monospace",
-        "font-size": 11,
-        color: color("--text"),
-        "background-color": color("--surface"),
-        "border-color": color("--accent"),
-        "border-width": 1,
-        "border-style": "dashed",
-        "text-valign": "center",
-        "text-halign": "center",
-      },
-    },
-    {
-      selector: "edge[?imports]",
-      style: { "curve-style": "bezier", "line-color": color("--accent"), "target-arrow-color": color("--accent"), opacity: 0.8 },
     },
     {
       selector: "edge.cycle",
@@ -284,8 +278,9 @@ function graphStyle() {
   ];
 }
 
-// The module graph. Clicking a module focuses it: only it and what it depends
-// on stay, laid out from the left, and its node becomes a card with its docs.
+// The module graph, or the oracle graph. Clicking a node focuses it: only it
+// and what it depends on (or imports) stay, laid out from the left, and it
+// becomes a card with its docs.
 export default function GraphPage({ workspace }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
@@ -296,9 +291,18 @@ export default function GraphPage({ workspace }) {
   // The graph whose initial layout has finished, so focus can be applied to it.
   const [readyGraph, setReadyGraph] = useState(null);
   const [focus, setFocus] = useState(focusFromUrl);
-  const focused = workspace.modules.find((module) => module.id === focus);
+  const [view, setView] = useState(viewFromUrl);
+  // Every oracle, with the module it sits beside and the module node showing that one.
+  const oracles = useMemo(() => workspace.modules.flatMap((module) => module.oracles.map((oracle) => ({
+    ...oracle,
+    owner: module.id,
+    shown: shownModule(workspace, module.id),
+  }))), [workspace]);
+  const card = view === "oracles"
+    ? oracleCard(oracles.find((oracle) => oracle.path === focus))
+    : moduleCard(workspace.modules.find((module) => module.id === focus), oracles);
 
-  // Focus changes are browser history entries, so back steps out of them.
+  // Focus and view changes are browser history entries, so back steps out of them.
   const focusOn = useCallback((id) => {
     const url = new URL(window.location.href);
     if (id) url.searchParams.set("focus", id);
@@ -307,8 +311,18 @@ export default function GraphPage({ workspace }) {
     setFocus(id);
   }, []);
 
+  function showView(next) {
+    if (next === view) return;
+    window.history.pushState(null, "", routes.graph({ view: next === "oracles" ? next : "" }));
+    setFocus(null);
+    setView(next);
+  }
+
   useEffect(() => {
-    const restore = () => setFocus(focusFromUrl());
+    const restore = () => {
+      setFocus(focusFromUrl());
+      setView(viewFromUrl());
+    };
     window.addEventListener("popstate", restore);
     return () => window.removeEventListener("popstate", restore);
   }, []);
@@ -326,17 +340,14 @@ export default function GraphPage({ workspace }) {
     if (!containerRef.current) return undefined;
     const graph = cytoscape({
       container: containerRef.current,
-      elements: graphElements(workspace),
+      elements: view === "oracles" ? oracleElements(workspace) : graphElements(workspace),
       minZoom: 0.15,
       maxZoom: 3,
       wheelSensitivity: 0.18,
       style: graphStyle(),
       layout: { name: "preset" },
     });
-    graph.on("tap", "node[moduleId]", (event) => focusOn(event.target.data("moduleId")));
-    graph.on("tap", "node[?oracle]", (event) => {
-      window.location.assign(`${routes.module(event.target.data("owner"))}#oracles`);
-    });
+    graph.on("tap", "node[item]", (event) => focusOn(event.target.data("item")));
     graph.on("tap", (event) => {
       if (event.target === graph) focusOn(null);
     });
@@ -353,13 +364,16 @@ export default function GraphPage({ workspace }) {
       card.style.display = "";
       card.style.transform = `translate(${box.x1}px, ${box.y1}px) scale(${graph.zoom()})`;
     });
+    graph.scratch("view", view);
     graphRef.current = graph;
     home.current = null;
     // Hidden until laid out and focused, so the unarranged graph never shows.
     containerRef.current.style.visibility = "hidden";
-    const initial = graph.layout(layoutOptions);
+    const initial = graph.layout({ ...layoutOptions, fit: false });
     initial.one("layoutstop", () => {
-      if (graphRef.current === graph) setReadyGraph(graph);
+      if (graphRef.current !== graph) return;
+      fitView(graph);
+      setReadyGraph(graph);
     });
     initial.run();
     const scheme = window.matchMedia("(prefers-color-scheme: light)");
@@ -370,12 +384,13 @@ export default function GraphPage({ workspace }) {
       graphRef.current = null;
       graph.destroy();
     };
-  }, [workspace, focusOn]);
+  }, [workspace, view, focusOn]);
 
   // Before paint, so a page opened already focused never shows the full graph.
   useLayoutEffect(() => {
     const graph = graphRef.current;
-    if (!graph || readyGraph !== graph) return;
+    // A view change replaces the graph, so the old one is left alone.
+    if (!graph || readyGraph !== graph || graph.scratch("view") !== view) return;
     // The first focus on a new graph is where the page opens, so it is not animated.
     const animate = graph.scratch("shown") === true;
     graph.scratch("shown", true);
@@ -387,7 +402,9 @@ export default function GraphPage({ workspace }) {
       clearFocus(graph);
       const saved = home.current;
       home.current = null;
-      graph.nodes().not(":parent").layout({ name: "preset", positions: (each) => saved[each.id()], fit: true, padding: PADDING, ...animation }).run();
+      const nodes = graph.nodes().not(":parent");
+      nodes.layout({ name: "preset", positions: (each) => saved[each.id()], fit: false, ...animation }).run();
+      graph.animate(centeredView(graph, boxAt(nodes, saved)), { duration: animation.animationDuration, easing: animation.animationEasing });
       return;
     }
     home.current ??= positions(graph.nodes());
@@ -399,8 +416,8 @@ export default function GraphPage({ workspace }) {
       kept.nodes().ancestors().addClass("quiet");
       node.addClass("focus");
     });
-    focusLayout(graph, workspace, node, kept, animate);
-  }, [focus, readyGraph, workspace]);
+    focusLayout(graph, node, kept, animate);
+  }, [focus, readyGraph, view]);
 
   function search(event) {
     event.preventDefault();
@@ -408,9 +425,9 @@ export default function GraphPage({ workspace }) {
     if (!normalized || !graphRef.current) return;
     // Folded modules have no node of their own, so search the graph's nodes.
     const match = graphRef.current
-      .nodes("[moduleId]")
-      .filter((node) => node.data("moduleId").toLowerCase().includes(normalized))[0];
-    if (match) focusOn(match.data("moduleId"));
+      .nodes("[item]")
+      .filter((node) => node.data("item").toLowerCase().includes(normalized))[0];
+    if (match) focusOn(match.data("item"));
   }
 
   function resetLayout() {
@@ -420,36 +437,55 @@ export default function GraphPage({ workspace }) {
     if (!graph) return;
     interrupt(graph);
     clearFocus(graph);
-    graph.layout({ ...layoutOptions, ...animation }).run();
+    const layout = graph.layout({ ...layoutOptions, ...animation });
+    layout.one("layoutstop", () => fitView(graph));
+    layout.run();
   }
 
   return (
     <main className="graph-page">
       <header className="topbar graph-toolbar">
         <a className="brand" href={routes.graph()}>documenter</a>
+        {oracles.length > 0 && (
+          <div className="mode-toggle" role="group" aria-label="Graph">
+            <button className={view === "modules" ? "active" : ""} type="button" onClick={() => showView("modules")}>Modules</button>
+            <button className={view === "oracles" ? "active" : ""} type="button" onClick={() => showView("oracles")}>Oracles</button>
+          </div>
+        )}
         <form className="graph-search" onSubmit={search}>
-          <label className="sr-only" htmlFor="module-search">Find module</label>
+          <label className="sr-only" htmlFor="module-search">{view === "oracles" ? "Find oracle" : "Find module"}</label>
           <input
             id="module-search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Find a module…"
+            placeholder={view === "oracles" ? "Find an oracle…" : "Find a module…"}
           />
         </form>
-        <button type="button" onClick={() => (focus ? focusOn(null) : graphRef.current?.fit(undefined, 48))}>Fit</button>
+        <button type="button" onClick={() => (focus ? focusOn(null) : graphRef.current && fitView(graphRef.current))}>Fit</button>
         <button type="button" onClick={resetLayout}>Reset layout</button>
       </header>
       {workspace.warnings.length > 0 && (
         <div className="warning-strip">{workspace.warnings.length} analysis warning(s)</div>
       )}
       <div className="graph-stage">
-        <div className="graph-canvas" ref={containerRef} aria-label="Module dependency graph" />
+        <div className="graph-canvas" ref={containerRef} aria-label={view === "oracles" ? "Oracle import graph" : "Module dependency graph"} />
         <section className="focus-card" ref={cardRef} style={{ display: "none", width: CARD.width, height: CARD.height }}>
-          {focused && (
+          {card && (
             <>
-              <h2>{focused.id === focused.crate_name ? focused.id : focused.name}</h2>
-              <p>{summary(focused.docs) || "No module documentation."}</p>
-              <a className="button" href={routes.module(focused.id)}>Inspect</a>
+              <h2>{card.title}</h2>
+              <p>{card.summary}</p>
+              {card.links.length > 0 && (
+                <div className="focus-links">
+                  {card.label}{" "}
+                  {card.links.map((link, index) => (
+                    <span key={link.href}>
+                      {index > 0 && ", "}
+                      <a href={link.href}>{link.text}</a>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <a className="button" href={card.inspect}>Inspect</a>
             </>
           )}
         </section>

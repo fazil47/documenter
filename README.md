@@ -206,6 +206,7 @@ A state model is a state machine whose invariants `npm run models` checks on
 random runs; it names an invariant `invariant`. An oracle defines in Lean what
 a module's results mean, with proofs about them; `lakefile.toml` at the root
 builds them, and property tests compare the Rust code with them. Oracles import
-each other, and focus mode draws the oracles of the modules on screen below
-them, with their imports and dotted links to the modules they cover. Each
+each other: the graph page's **Oracles** view shows them, boxed by the module
+they sit beside, with an arrow for each import, and focuses an oracle on click
+like the module graph does. A focused module's card links to its oracles. Each
 file's leading comment is its summary.
