@@ -222,9 +222,35 @@ impl Workspace {
         &self.warnings
     }
 
+    /// The absolute path of `file`, given relative to the root, if it holds
+    /// tests of `module_id`.
+    pub(crate) fn test_file(&self, module_id: &str, file: &str) -> Option<PathBuf> {
+        self.tests(module_id)
+            .iter()
+            .any(|test| test.file() == Some(file))
+            .then(|| self.root.join(file))
+    }
+
+    /// The module `path` belongs to: the module whose source it is, or whose
+    /// tests it holds, with the test file's path relative to the root.
+    pub(crate) fn module_at(&self, path: &Path) -> Option<(&str, Option<&str>)> {
+        if let Some(module) = self.module_for_source(path) {
+            return Some((module, None));
+        }
+        let path = path.canonicalize().ok()?;
+        self.modules.iter().find_map(|module| {
+            let file = module
+                .tests
+                .iter()
+                .filter_map(Test::file)
+                .find(|file| self.root.join(file) == path)?;
+            Some((module.id.as_str(), Some(file)))
+        })
+    }
+
     /// The module whose source file is `path`, if any. Module paths are under
     /// the canonical workspace root, so only `path` needs canonicalizing.
-    pub(crate) fn module_for_source(&self, path: &Path) -> Option<&str> {
+    fn module_for_source(&self, path: &Path) -> Option<&str> {
         let path = path.canonicalize().ok()?;
         self.modules
             .iter()

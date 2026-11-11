@@ -77,7 +77,7 @@ function NewNoteDialog({ module, onClose }) {
   );
 }
 
-// The module's tests, linking to each in the module's source when it is there.
+// The module's tests, linking to each where it is: in its own test file, or in the module's source.
 function TestsSection({ module }) {
   return (
     <section className="content-section" id="tests">
@@ -94,10 +94,16 @@ function TestsSection({ module }) {
             );
             return (
               <li key={`${test.name}:${test.line}`}>
-                {/* Tests in a separate file (JavaScript) say where they are instead of linking. */}
-                {module.file_backed && !test.file
-                  ? <a href={routes.code(module.id, { line: test.line - 1, character: 0 })}>{label}</a>
-                  : <div>{label}{test.file && <span className="test-summary">{test.file}:{test.line}</span>}</div>}
+                {/* Tests in a file of their own (JavaScript) open that file, and say where it is. */}
+                {test.file
+                  ? (
+                    <a href={routes.code(module.id, { file: test.file, line: test.line - 1, character: 0 })}>
+                      {label}<span className="test-summary">{test.file}:{test.line}</span>
+                    </a>
+                  )
+                  : module.file_backed
+                    ? <a href={routes.code(module.id, { line: test.line - 1, character: 0 })}>{label}</a>
+                    : <div>{label}</div>}
               </li>
             );
           })}

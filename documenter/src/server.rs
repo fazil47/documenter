@@ -334,6 +334,9 @@ struct ResourceQuery {
 struct ModuleQuery {
     token: String,
     module: String,
+    /// One of the module's test files, relative to the root, to use instead
+    /// of its source.
+    file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -511,7 +514,7 @@ async fn get_source(
     Query(query): Query<ModuleQuery>,
 ) -> ApiResult<Json<SourceResponse>> {
     state.authorize(&query.token)?;
-    let path = source_path(&state, &query.module).await?;
+    let path = source_path(&state, &query.module, query.file.as_deref()).await?;
     ensure_safe_existing_file(&state.root, &path)?;
     let content = std::fs::read_to_string(&path)
         .map_err(|error| ApiError::io("reading source file", error))?;
@@ -528,7 +531,7 @@ async fn put_source(
     Json(body): Json<SaveContent>,
 ) -> ApiResult<Json<SourceResponse>> {
     state.authorize(&query.token)?;
-    let path = source_path(&state, &query.module).await?;
+    let path = source_path(&state, &query.module, query.file.as_deref()).await?;
     let unsaved_in_editor = match source_document_path(&state.root, &path) {
         Some(document) => state.documents.read().await.contains_key(&document),
         None => false,
@@ -555,6 +558,7 @@ async fn put_source(
 #[derive(Debug, Deserialize)]
 struct NavigateRequest {
     module: String,
+    file: Option<String>,
     kind: NavigationKind,
     line: u32,
     character: u32,
@@ -570,6 +574,8 @@ struct NavigateResponse {
 struct LocationResponse {
     path: String,
     module: Option<String>,
+    /// Set when the location is in one of the module's test files.
+    file: Option<String>,
     line: u32,
     character: u32,
     end_line: u32,
@@ -604,7 +610,7 @@ async fn language_server(
     Query(query): Query<ModuleQuery>,
 ) -> ApiResult<Json<Option<ServerStatus>>> {
     state.authorize(&query.token)?;
-    let path = source_path(&state, &query.module).await?;
+    let path = source_path(&state, &query.module, query.file.as_deref()).await?;
     Ok(Json(state.language_servers.status(&path).await))
 }
 
@@ -623,7 +629,7 @@ async fn navigate(
     Json(body): Json<NavigateRequest>,
 ) -> ApiResult<Json<NavigateResponse>> {
     state.authorize(&query.token)?;
-    let path = source_path(&state, &body.module).await?;
+    let path = source_path(&state, &body.module, body.file.as_deref()).await?;
     ensure_safe_existing_file(&state.root, &path)?;
     let locations = state
         .language_servers
@@ -655,17 +661,23 @@ async fn navigate(
     let locations = locations
         .into_iter()
         .zip(previews)
-        .map(|(location, preview)| LocationResponse {
-            path: display_path(&state.root, &location.path),
-            module: model
+        .map(|(location, preview)| {
+            let (module, file) = model
                 .workspace
-                .module_for_source(&location.path)
-                .map(str::to_owned),
-            line: location.start.0,
-            character: location.start.1,
-            end_line: location.end.0,
-            end_character: location.end.1,
-            preview,
+                .module_at(&location.path)
+                .map_or((None, None), |(module, file)| {
+                    (Some(module.to_owned()), file.map(str::to_owned))
+                });
+            LocationResponse {
+                path: display_path(&state.root, &location.path),
+                module,
+                file,
+                line: location.start.0,
+                character: location.start.1,
+                end_line: location.end.0,
+                end_character: location.end.1,
+                preview,
+            }
         })
         .collect();
     Ok(Json(NavigateResponse { locations }))
@@ -803,13 +815,14 @@ async fn ensure_module(state: &AppState, module: &str) -> ApiResult<()> {
     }
 }
 
-async fn source_path(state: &AppState, module: &str) -> ApiResult<PathBuf> {
+/// The module's source file, or `file` if it is one of the module's test files.
+async fn source_path(state: &AppState, module: &str, file: Option<&str>) -> ApiResult<PathBuf> {
     let model = state.model.read().await;
-    model
-        .workspace
-        .source_path(module)
-        .map(Path::to_path_buf)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "source file not found"))
+    match file {
+        Some(file) => model.workspace.test_file(module, file),
+        None => model.workspace.source_path(module).map(Path::to_path_buf),
+    }
+    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "source file not found"))
 }
 
 fn display_path(root: &Path, path: &Path) -> String {
@@ -1191,6 +1204,69 @@ mod tests {
         .await;
         assert_eq!(saved.0, StatusCode::CONFLICT);
         assert_eq!(fs::read_to_string(&source).unwrap(), "pub struct Engine;\n");
+    }
+
+    #[tokio::test]
+    async fn opens_only_a_modules_own_test_files() {
+        let project = sample_project();
+        fs::create_dir_all(project.path().join("web/src")).unwrap();
+        fs::write(
+            project.path().join("web/package.json"),
+            r#"{ "name": "web" }"#,
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("web/src/engine.js"),
+            "export class Engine {}\n",
+        )
+        .unwrap();
+        let tests = "import { it } from \"vitest\";\n\nit(\"starts\", () => {});\n";
+        fs::write(project.path().join("web/src/engine.test.js"), tests).unwrap();
+        let app = test_router(project.path());
+        let opened = get_engine_file(&app, "web/src/engine.test.js").await;
+        assert_eq!(opened.0, StatusCode::OK, "{}", opened.1);
+        assert_eq!(opened.1["path"], "web/src/engine.test.js");
+        assert_eq!(opened.1["content"], tests);
+        let absolute = project.path().join("web/src/engine.test.js");
+        let absolute = absolute.to_str().unwrap();
+        for other in [
+            "web/src/engine.js",
+            "Cargo.toml",
+            "../engine.test.js",
+            absolute,
+        ] {
+            assert_eq!(
+                get_engine_file(&app, other).await.0,
+                StatusCode::NOT_FOUND,
+                "{other}"
+            );
+        }
+
+        let save = |file: &str, content: &str| {
+            let uri = format!("/api/source?token=test-token&module=web::engine&file={file}");
+            let body =
+                serde_json::json!({ "content": content, "revision": content_revision(tests) });
+            let app = app.clone();
+            async move { json_request(&app, "PUT", &uri, body).await }
+        };
+        let edited = format!("{tests}it(\"stops\", () => {{}});\n");
+        assert_eq!(
+            save("web/src/engine.test.js", &edited).await.0,
+            StatusCode::OK
+        );
+        let saved = fs::read_to_string(project.path().join("web/src/engine.test.js")).unwrap();
+        assert_eq!(saved, edited);
+        assert_eq!(save("Cargo.toml", "").await.0, StatusCode::NOT_FOUND);
+    }
+
+    async fn get_engine_file(app: &Router, file: &str) -> (StatusCode, serde_json::Value) {
+        json_request(
+            app,
+            "GET",
+            &format!("/api/source?token=test-token&module=web::engine&file={file}"),
+            serde_json::Value::Null,
+        )
+        .await
     }
 
     #[tokio::test]

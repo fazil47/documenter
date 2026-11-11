@@ -18,7 +18,9 @@ function route() {
     return { name: "module", module: segments[1] };
   }
   if (segments[0] === "code" && segments.length === 2) {
-    return { name: "code", module: segments[1] };
+    // `file` opens one of the module's test files instead of its source.
+    const file = new URLSearchParams(window.location.search).get("file") || undefined;
+    return { name: "code", module: segments[1], file };
   }
   if (segments[0] === "notes" && segments.length === 3) {
     return { name: "note", module: segments[1], file: segments[2] };
@@ -83,7 +85,7 @@ export default function App() {
   if (current.name === "code") {
     return (
       <Suspense fallback={<main className="centered-state"><p>Loading code editor…</p></main>}>
-        <CodePage moduleId={current.module} workspaceRevision={revision} />
+        <CodePage moduleId={current.module} testFile={current.file} workspaceRevision={revision} />
       </Suspense>
     );
   }

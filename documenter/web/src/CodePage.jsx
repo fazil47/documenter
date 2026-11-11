@@ -98,7 +98,7 @@ function LanguageServerStatus({ server }) {
 // Helix does on opening a file. Mounted with the Helix status line, so it polls
 // only in Helix mode. Polling stops for a file no server handles, or on a missing
 // or failed server, and resumes after the next lookup, which restarts it.
-function useLanguageServer(moduleId, lookups) {
+function useLanguageServer(moduleId, testFile, lookups) {
   const [server, setServer] = useState(undefined);
   useEffect(() => {
     // Not the previous file's server while the first poll is in flight.
@@ -108,7 +108,7 @@ function useLanguageServer(moduleId, lookups) {
     const poll = async () => {
       let delay = 1000;
       try {
-        const status = await api("/api/language-server", {}, { module: moduleId });
+        const status = await api("/api/language-server", {}, { module: moduleId, file: testFile });
         if (stopped) return;
         setServer(status);
         if (!status || status.state === "missing" || status.state === "failed") return;
@@ -123,13 +123,13 @@ function useLanguageServer(moduleId, lookups) {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [moduleId, lookups]);
+  }, [moduleId, testFile, lookups]);
   return server;
 }
 
-function HelixStatus({ status, moduleId, lookups }) {
+function HelixStatus({ status, moduleId, testFile, lookups }) {
   const { mode, pending, prompt, message, recording } = status;
-  const server = useLanguageServer(moduleId, lookups);
+  const server = useLanguageServer(moduleId, testFile, lookups);
   return (
     <footer className={`helix-status helix-${mode}`}>
       <span className="helix-mode">{MODE_LABELS[mode]}</span>
@@ -145,7 +145,8 @@ function HelixStatus({ status, moduleId, lookups }) {
   );
 }
 
-export default function CodePage({ moduleId, workspaceRevision }) {
+// The source of module `moduleId`, or `testFile` if it is one of the module's test files.
+export default function CodePage({ moduleId, testFile, workspaceRevision }) {
   const [source, setSource] = useState(null);
   const [file, setFile] = useState(null);
   const [generation, setGeneration] = useState(0);
@@ -166,7 +167,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
   const leaving = useRef(false);
   const seenWorkspaceRevision = useRef(workspaceRevision);
 
-  const fetchSource = useCallback(() => api("/api/source", {}, { module: moduleId }), [moduleId]);
+  const fetchSource = useCallback(() => api("/api/source", {}, { module: moduleId, file: testFile }), [moduleId, testFile]);
 
   const showSource = useCallback((loaded) => {
     draft.current = loaded.content;
@@ -225,7 +226,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       const saved = await api(
         "/api/source",
         { method: "PUT", body: JSON.stringify({ content, revision: source.revision }) },
-        { module: moduleId },
+        { module: moduleId, file: testFile },
       );
       setSource(saved);
       setDirty(false);
@@ -246,7 +247,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     } finally {
       setEditing(true);
     }
-  }, [source, moduleId]);
+  }, [source, moduleId, testFile]);
 
   // Saving ends the edit session so Pierre hands back the final file; editing resumes after the PUT.
   const save = useCallback(() => {
@@ -307,20 +308,21 @@ export default function CodePage({ moduleId, workspaceRevision }) {
       end: { line: location.end_line, character: location.end_character },
     };
     if (!location.module) return `${location.path} is outside the workspace modules`;
-    if (location.module === moduleId) {
+    if (location.module === moduleId && (location.file ?? undefined) === testFile) {
       helixActions.current?.jumpTo(target);
       return undefined;
     }
     if (current.current.dirty) return "unsaved changes; save with :w before leaving this file";
     rememberInHistory({ helixSelection: selectionTarget(current.current.editor), helixNewer: true });
     window.location.assign(routes.code(location.module, {
+      file: location.file,
       line: target.start.line,
       character: target.start.character,
       endLine: target.end.line,
       endCharacter: target.end.character,
     }));
     return undefined;
-  }, [moduleId]);
+  }, [moduleId, testFile]);
 
   const navigate = useCallback(async ({ kind, line, character }) => {
     const content = current.current.editor?.getText() ?? "";
@@ -331,7 +333,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     try {
       const { locations } = await api("/api/navigate", {
         method: "POST",
-        body: JSON.stringify({ module: moduleId, kind, line, character, content }),
+        body: JSON.stringify({ module: moduleId, file: testFile, kind, line, character, content }),
       });
       if (current.current.editor?.getText() !== content) {
         notify("the file changed during the lookup; try again", true);
@@ -348,7 +350,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
     } catch (reason) {
       notify(reason.message, true);
     }
-  }, [moduleId, openLocation]);
+  }, [moduleId, testFile, openLocation]);
 
   const onHelixCommand = useCallback((command) => {
     // Returns an error for the Helix status line when the command cannot run.
@@ -459,7 +461,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
             file={file}
             options={fileOptions}
             edit={editing}
-            editStateKey={`source:${moduleId}:${generation}`}
+            editStateKey={`source:${moduleId}:${testFile ?? ""}:${generation}`}
             editorOptions={editorOptions}
             onEditChange={onEditChange}
             onEditComplete={onEditComplete}
@@ -473,7 +475,7 @@ export default function CodePage({ moduleId, workspaceRevision }) {
           </div>
         )}
       </div>
-      {helixEnabled && <HelixStatus status={helixStatus} moduleId={moduleId} lookups={lookups} />}
+      {helixEnabled && <HelixStatus status={helixStatus} moduleId={moduleId} testFile={testFile} lookups={lookups} />}
       {picker && (
         <LocationPicker
           title={picker.title}
