@@ -120,7 +120,8 @@ export default function ModulePage({ workspace, notes, moduleId }) {
     <main className="content-page">
       <header className="topbar">
         <a className="brand" href={routes.graph()}>documenter</a>
-        <a className="back-link" href={routes.graph()}>← Module graph</a>
+        {/* Back to the graph, focused on this module. */}
+        <a className="back-link" href={routes.graph({ focus: module.id })}>← Module graph</a>
       </header>
       <div className="content-shell">
         <div className="eyebrow">{module.file_backed ? "File-backed module" : "Inline module"}</div>

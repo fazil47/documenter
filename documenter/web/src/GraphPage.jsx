@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import cytoscape from "cytoscape";
 import elk from "cytoscape-elk";
 
@@ -55,9 +55,9 @@ function curveThrough(source, target, points) {
   };
 }
 
-// Lays out `node` and its dependencies in columns from the left, then animates
-// the nodes and the view there together.
-function focusLayout(graph, node, kept) {
+// Lays out `node` and its dependencies in columns from the left, then moves the
+// nodes and the view there together, animated unless `animate` is false.
+function focusLayout(graph, node, kept, animate) {
   interrupt(graph);
   const nodes = kept.nodes().not(":parent");
   const sizes = Object.fromEntries(nodes.map((each) => [each.id(), { width: each.outerWidth(), height: each.outerHeight() }]));
@@ -86,11 +86,14 @@ function focusLayout(graph, node, kept) {
   const height = graph.height();
   const fit = Math.min(1, (width - 2 * PADDING) / (box.x2 - box.x1), (height - 2 * PADDING) / (box.y2 - box.y1));
   const zoom = Math.max(graph.minZoom(), fit);
+  const view = { zoom, pan: { x: PADDING - box.x1 * zoom, y: (height - (box.y2 - box.y1) * zoom) / 2 - box.y1 * zoom } };
+  if (!animate) {
+    graph.batch(() => nodes.forEach((each) => each.position(end[each.id()])));
+    graph.viewport(view);
+    return;
+  }
   nodes.layout({ name: "preset", positions: (each) => end[each.id()], fit: false, ...animation }).run();
-  graph.animate(
-    { zoom, pan: { x: PADDING - box.x1 * zoom, y: (height - (box.y2 - box.y1) * zoom) / 2 - box.y1 * zoom } },
-    { duration: animation.animationDuration, easing: animation.animationEasing },
-  );
+  graph.animate(view, { duration: animation.animationDuration, easing: animation.animationEasing });
 }
 
 // Undoes what focusing changed on the graph's elements.
@@ -279,6 +282,8 @@ export default function GraphPage({ workspace }) {
     });
     graphRef.current = graph;
     home.current = null;
+    // Hidden until laid out and focused, so the unarranged graph never shows.
+    containerRef.current.style.visibility = "hidden";
     const initial = graph.layout(layoutOptions);
     initial.one("layoutstop", () => {
       if (graphRef.current === graph) setReadyGraph(graph);
@@ -294,9 +299,14 @@ export default function GraphPage({ workspace }) {
     };
   }, [workspace, focusOn]);
 
-  useEffect(() => {
+  // Before paint, so a page opened already focused never shows the full graph.
+  useLayoutEffect(() => {
     const graph = graphRef.current;
     if (!graph || readyGraph !== graph) return;
+    // The first focus on a new graph is where the page opens, so it is not animated.
+    const animate = graph.scratch("shown") === true;
+    graph.scratch("shown", true);
+    containerRef.current.style.visibility = "";
     const node = focus ? graph.getElementById(focus) : graph.collection();
     if (node.empty()) {
       if (!home.current) return;
@@ -316,7 +326,7 @@ export default function GraphPage({ workspace }) {
       kept.nodes().ancestors().addClass("quiet");
       node.addClass("focus");
     });
-    focusLayout(graph, node, kept);
+    focusLayout(graph, node, kept, animate);
   }, [focus, readyGraph]);
 
   function search(event) {

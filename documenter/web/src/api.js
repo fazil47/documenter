@@ -40,7 +40,7 @@ function href(path, values = {}) {
 }
 
 export const routes = {
-  graph: () => href("/"),
+  graph: (values = {}) => href("/", values),
   module: (module) => href(`/modules/${encodeURIComponent(module)}`),
   code: (module, values = {}) => href(`/code/${encodeURIComponent(module)}`, values),
   note: (module, file) =>
