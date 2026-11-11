@@ -103,7 +103,8 @@ module note_saving {
     discarded' = discarded, nextEdit' = nextEdit,
   }
 
-  // A change notification reaches the page, which fetches the note.
+  // A change notification reaches the page, which fetches the note. The page
+  // runs one reload at a time (`NoteSync.refresh`), so notifications wait.
   action notify = all {
     notifications > 0,
     reload == NoReload,

@@ -73,6 +73,7 @@ export default function App() {
   if (current.name === "note") {
     return (
       <NotePage
+        key={`${current.module}/${current.file}`}
         moduleId={current.module}
         filename={current.file}
         workspaceRevision={revision}

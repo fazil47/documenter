@@ -203,7 +203,12 @@ src/analysis/cfg/oracle/Cfg.lean      # a Lean oracle
 ```
 
 A state model is a state machine whose invariants `npm run models` checks on
-random runs; it names an invariant `invariant`. An oracle defines in Lean what
+random runs; it names an invariant `invariant`. Saving notes is also simulated
+deterministically, checking the same invariants on real code: `cargo test` runs
+note pages and an outside editor against the real server on a simulated disk,
+one seed deciding every delay and failure (`SIMULATION_SEEDS=2000` runs more),
+and `npm test` runs the page's `NoteSync` with fast-check's scheduler deciding
+the order of every request and reply. An oracle defines in Lean what
 a module's results mean, with proofs about them; `lakefile.toml` at the root
 builds them, and property tests compare the Rust code with them. Oracles import
 each other: the graph page's **Oracles** view shows them, boxed by the module

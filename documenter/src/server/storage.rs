@@ -53,9 +53,10 @@ impl Storage {
     }
 
     /// Replaces `path` with `contents` if it still has `revision` (see
-    /// `content_revision`). On disk the comparison and the replacement happen
-    /// without a pause, so another program can only slip a write in during
-    /// the rename itself, which no ordinary file API rules out.
+    /// `content_revision`). Saves take turns, and on disk nothing else runs
+    /// between the comparison and the replacement. Another program can still
+    /// write in that window, from the read until the rename, which no ordinary
+    /// file API rules out; the simulation leaves it out.
     pub(super) async fn replace_if_unchanged(
         &self,
         path: &Path,

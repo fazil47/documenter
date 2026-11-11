@@ -1,12 +1,13 @@
 //! Deterministic simulation of saving a note. Note pages that follow
-//! `NotePage`'s save and reload protocol, and an outside editor, race each
+//! `NoteSync`'s save and reload protocol, and an outside editor, race each
 //! other against the real server and its debouncer, on a simulated disk. One
 //! seed decides every delay, choice, and write failure, and time is Tokio's
 //! paused clock, so a failing run replays exactly from its seed.
 //!
 //! The invariants are those of `quint/note_saving.qnt`: no edit is lost unless
-//! a user discards it, and once things settle, a page without unsaved edits
-//! shows the note as it is on disk.
+//! a user discards it, and a page only warns of an outside change when the disk
+//! holds something it has not loaded. Once things settle, a page without
+//! unsaved edits shows the note as it is on disk.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -41,7 +42,7 @@ const ACTIVE: Duration = Duration::from_millis(800);
 /// SplitMix64, shared by every actor in a run: they take turns
 /// deterministically, so they draw from it in the same order every time.
 #[derive(Clone)]
-pub(super) struct Random(Arc<Mutex<u64>>);
+struct Random(Arc<Mutex<u64>>);
 
 impl Random {
     fn new(seed: u64) -> Self {
@@ -147,13 +148,16 @@ struct World {
     random: Random,
     /// Every edit made, by a page or outside.
     made: Mutex<BTreeSet<String>>,
-    /// Each step taken, to report a failure and to compare runs of one seed.
+    /// Each step taken and when, to report a failure and to compare runs of
+    /// one seed.
     log: Mutex<Vec<String>>,
+    start: Instant,
 }
 
 impl World {
     fn step(&self, step: String) {
-        self.log.lock().unwrap().push(step);
+        let at = self.start.elapsed().as_millis();
+        self.log.lock().unwrap().push(format!("{at:>5}ms {step}"));
     }
 
     fn failure(&self, seed: u64, problem: &str) -> String {
@@ -171,6 +175,8 @@ impl World {
             .body(body.map_or_else(Body::empty, |body| Body::from(body.to_string())))
             .unwrap();
         let response = self.router.clone().oneshot(request).await.unwrap();
+        // The reply takes a while to travel back, so replies can overtake each other.
+        sleep(self.random.delay(10)).await;
         let status = response.status();
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         (
@@ -181,7 +187,6 @@ impl World {
 }
 
 /// A note as the server sent it.
-#[derive(Clone, PartialEq)]
 struct Loaded {
     content: String,
     revision: String,
@@ -196,13 +201,15 @@ impl Loaded {
     }
 }
 
-/// A note page's state, as `NotePage` keeps it.
+/// A note page's state, as `NoteSync` keeps it.
 struct PageState {
     loaded: Loaded,
     editor: String,
     warning: bool,
     saving: bool,
     saves: u64,
+    reloading: bool,
+    stale: bool,
     discarded: BTreeSet<String>,
 }
 
@@ -258,26 +265,46 @@ impl Page {
             .step(format!("{} save answered {status}", self.name));
     }
 
-    /// After a change notification: once no save is in flight, fetches the
-    /// note, and fetches again if a save happened meanwhile. Shows it if it
-    /// changed and the editor has no unsaved edits; warns otherwise.
+    /// After a change notification, as `NoteSync.refresh` does. One reload runs
+    /// at a time and a notification during it makes it fetch again. Each fetch
+    /// waits for any save in flight and is redone if a save happened meanwhile.
+    /// Shows the note if it changed and the editor has no unsaved edits; warns
+    /// otherwise.
     async fn refresh(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.stale = true;
+            if state.reloading {
+                return;
+            }
+            state.reloading = true;
+        }
         loop {
+            {
+                let mut state = self.state.lock().unwrap();
+                if !state.stale {
+                    state.reloading = false;
+                    return;
+                }
+                state.stale = false;
+            }
             while self.state.lock().unwrap().saving {
                 sleep(Duration::from_millis(1)).await;
             }
             let before = self.state.lock().unwrap().saves;
             let (status, body) = self.world.request("GET", None).await;
+            let mut state = self.state.lock().unwrap();
             if status != StatusCode::OK {
+                state.reloading = false;
                 return;
             }
             let fetched = Loaded::from(&body);
-            let mut state = self.state.lock().unwrap();
             if state.saving || state.saves != before {
+                state.stale = true;
                 continue;
             }
             if fetched.revision == state.loaded.revision {
-                return;
+                continue;
             }
             if state.editor == state.loaded.content {
                 state.editor = fetched.content.clone();
@@ -290,7 +317,6 @@ impl Page {
                 self.world
                     .step(format!("{} warns of an outside change", self.name));
             }
-            return;
         }
     }
 
@@ -339,6 +365,22 @@ fn lost_edits(world: &World, pages: &[Arc<Page>]) -> Vec<String> {
         .collect()
 }
 
+/// The pages that warn of an outside change when the disk holds nothing they
+/// have not loaded.
+fn false_warnings(world: &World, pages: &[Arc<Page>]) -> Vec<String> {
+    let disk = std::fs::read_to_string(&world.path).unwrap();
+    pages
+        .iter()
+        .filter(|page| {
+            let state = page.state.lock().unwrap();
+            state.warning
+                && lines(&disk)
+                    .all(|line| lines(&state.loaded.content).any(|loaded| loaded == line))
+        })
+        .map(|page| page.name.clone())
+        .collect()
+}
+
 /// The workspace every run serves, analysed once.
 fn workspace() -> &'static (tempfile::TempDir, Workspace) {
     static WORKSPACE: OnceLock<(tempfile::TempDir, Workspace)> = OnceLock::new();
@@ -361,7 +403,9 @@ fn workspace() -> &'static (tempfile::TempDir, Workspace) {
 async fn simulate(seed: u64) -> Result<Vec<String>, String> {
     let (_, workspace) = workspace();
     let root = workspace.root().to_path_buf();
-    let notes = Notes::at(root.join(format!("target/simulation/{seed}")), &root).unwrap();
+    // Each run's own notes folder, so runs in parallel tests never share a file.
+    let store = tempfile::tempdir().unwrap();
+    let notes = Notes::at(store.path().to_path_buf(), &root).unwrap();
     let path = notes.folder(MODULE).join(NOTE);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "# Race\n").unwrap();
@@ -400,6 +444,7 @@ async fn simulate(seed: u64) -> Result<Vec<String>, String> {
         random,
         made: Mutex::new(BTreeSet::new()),
         log: Mutex::new(Vec::new()),
+        start: Instant::now(),
     });
 
     let (_, first) = world.request("GET", None).await;
@@ -415,6 +460,8 @@ async fn simulate(seed: u64) -> Result<Vec<String>, String> {
                     warning: false,
                     saving: false,
                     saves: 0,
+                    reloading: false,
+                    stale: false,
                     discarded: BTreeSet::new(),
                 }),
             })
@@ -479,6 +526,10 @@ async fn simulate(seed: u64) -> Result<Vec<String>, String> {
         let lost = lost_edits(&world, &pages);
         if !lost.is_empty() {
             return Err(world.failure(seed, &format!("lost {lost:?}")));
+        }
+        let warning = false_warnings(&world, &pages);
+        if !warning.is_empty() {
+            return Err(world.failure(seed, &format!("{warning:?} warn with nothing new on disk")));
         }
     }
     let disk = std::fs::read_to_string(&world.path).unwrap();
