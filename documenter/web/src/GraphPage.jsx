@@ -116,6 +116,11 @@ function graphStyle() {
   const styles = getComputedStyle(document.documentElement);
   const color = (name) => styles.getPropertyValue(name).trim();
   return [
+    // No grey circle where the background is pressed.
+    {
+      selector: "core",
+      style: { "active-bg-opacity": 0 },
+    },
     {
       selector: "node[moduleId]",
       style: {
@@ -179,7 +184,8 @@ function graphStyle() {
     // Focus mode: crates are not boxed, and each edge is its own curve.
     {
       selector: "node[crateGroup].quiet",
-      style: { "background-opacity": 0, "border-width": 0, "text-opacity": 0 },
+      // Invisible and not grabbable, so pressing inside it acts on the background.
+      style: { "background-opacity": 0, "border-width": 0, "text-opacity": 0, events: "no" },
     },
     {
       selector: "edge.direct",
