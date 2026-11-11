@@ -258,8 +258,8 @@ mod tests {
         lean_oracle::ask(&query)
     }
 
-    /// Two module ids of `workspace`, chosen by `picks`.
-    fn pick<'a>(workspace: &'a Workspace, pick: prop::sample::Index) -> &'a str {
+    /// The module id of `workspace` that `pick` chooses.
+    fn pick(workspace: &Workspace, pick: prop::sample::Index) -> &str {
         &workspace.modules[pick.index(workspace.modules.len())].id
     }
 

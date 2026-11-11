@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7ed66f146d855781935c97ac8bf5e8ec56f7a57836e85f565daa819acfdf3a3b # shrinks to workspace = Workspace { root: "", modules: [Module { id: "c", crate_name: "c", name: "c", docs: "", folded: false, items: [], source_path: None }, Module { id: "c::a", crate_name: "c", name: "a", docs: "", folded: false, items: [], source_path: None }, Module { id: "c::b", crate_name: "c", name: "b", docs: "", folded: false, items: [], source_path: None }], edges: [], warnings: [] }, module = Index(6148914691236517206), drop = 1, crate_prefix = true
