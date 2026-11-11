@@ -23,6 +23,82 @@ const layoutOptions = {
   },
 };
 
+// Cytoscape draws on a canvas, so it takes the stylesheet's theme colors as values.
+function graphStyle() {
+  const styles = getComputedStyle(document.documentElement);
+  const color = (name) => styles.getPropertyValue(name).trim();
+  return [
+    {
+      selector: "node[moduleId]",
+      style: {
+        shape: "round-rectangle",
+        width: "label",
+        height: 34,
+        padding: "14px",
+        label: "data(label)",
+        "font-family": "IBM Plex Mono, ui-monospace, monospace",
+        "font-size": 12,
+        "font-weight": 600,
+        color: color("--text"),
+        "background-color": color("--button"),
+        "border-color": color("--border-hover"),
+        "border-width": 1,
+        "text-valign": "center",
+        "text-halign": "center",
+      },
+    },
+    {
+      selector: "node[fileBacked = false]",
+      style: {
+        "border-style": "dashed",
+        "background-color": color("--surface-hover"),
+      },
+    },
+    {
+      selector: "node[crateGroup]",
+      style: {
+        shape: "round-rectangle",
+        label: "data(label)",
+        "text-valign": "top",
+        "text-halign": "left",
+        "font-size": 13,
+        "font-weight": 700,
+        color: color("--text-muted"),
+        padding: "28px",
+        "background-color": color("--surface"),
+        "background-opacity": 0.72,
+        "border-color": color("--border-strong"),
+        "border-width": 1,
+      },
+    },
+    {
+      selector: "edge",
+      style: {
+        width: 1.5,
+        "line-color": color("--border-hover"),
+        "target-arrow-color": color("--text-faint"),
+        "target-arrow-shape": "triangle",
+        "curve-style": "taxi",
+        "taxi-direction": "rightward",
+        "taxi-turn": 24,
+        opacity: 0.72,
+      },
+    },
+    {
+      selector: ".faded",
+      style: { opacity: 0.12 },
+    },
+    {
+      selector: ".focused",
+      style: {
+        "border-color": color("--accent"),
+        "border-width": 3,
+        "background-color": color("--selected"),
+      },
+    },
+  ];
+}
+
 export default function GraphPage({ workspace }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
@@ -36,76 +112,7 @@ export default function GraphPage({ workspace }) {
       minZoom: 0.15,
       maxZoom: 3,
       wheelSensitivity: 0.18,
-      style: [
-        {
-          selector: "node[moduleId]",
-          style: {
-            shape: "round-rectangle",
-            width: "label",
-            height: 34,
-            padding: "14px",
-            label: "data(label)",
-            "font-family": "IBM Plex Mono, ui-monospace, monospace",
-            "font-size": 12,
-            "font-weight": 600,
-            color: "#d9e3f0",
-            "background-color": "#222d3b",
-            "border-color": "#536981",
-            "border-width": 1,
-            "text-valign": "center",
-            "text-halign": "center",
-          },
-        },
-        {
-          selector: "node[fileBacked = false]",
-          style: {
-            "border-style": "dashed",
-            "background-color": "#1c2531",
-          },
-        },
-        {
-          selector: "node[crateGroup]",
-          style: {
-            shape: "round-rectangle",
-            label: "data(label)",
-            "text-valign": "top",
-            "text-halign": "left",
-            "font-size": 13,
-            "font-weight": 700,
-            color: "#8fa5bd",
-            padding: "28px",
-            "background-color": "#151d27",
-            "background-opacity": 0.72,
-            "border-color": "#334457",
-            "border-width": 1,
-          },
-        },
-        {
-          selector: "edge",
-          style: {
-            width: 1.5,
-            "line-color": "#52677e",
-            "target-arrow-color": "#758da7",
-            "target-arrow-shape": "triangle",
-            "curve-style": "taxi",
-            "taxi-direction": "rightward",
-            "taxi-turn": 24,
-            opacity: 0.72,
-          },
-        },
-        {
-          selector: ".faded",
-          style: { opacity: 0.12 },
-        },
-        {
-          selector: ".focused",
-          style: {
-            "border-color": "#f5b96b",
-            "border-width": 3,
-            "background-color": "#35445a",
-          },
-        },
-      ],
+      style: graphStyle(),
       layout: layoutOptions,
     });
 
@@ -122,7 +129,11 @@ export default function GraphPage({ workspace }) {
       graph.elements().removeClass("faded");
     });
     graphRef.current = graph;
+    const scheme = window.matchMedia("(prefers-color-scheme: light)");
+    const restyle = () => graph.style(graphStyle());
+    scheme.addEventListener("change", restyle);
     return () => {
+      scheme.removeEventListener("change", restyle);
       graphRef.current = null;
       graph.destroy();
     };

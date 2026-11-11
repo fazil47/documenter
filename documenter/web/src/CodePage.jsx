@@ -10,8 +10,8 @@ const createEditor = (type, options, key) => new Editor(type, options, key);
 
 const fileOptions = {
   theme: { dark: "pierre-dark", light: "pierre-light" },
-  // The rest of the workspace UI is dark-only.
-  themeType: "dark",
+  // Follows the system appearance, like the rest of the workspace UI.
+  themeType: "system",
   preferredHighlighter: "shiki-js",
   // Lets Helix mode turn Pierre's caret into a block cursor through inherited variables.
   // Pierre's own rules are unlayered, so these layered overrides need !important.
