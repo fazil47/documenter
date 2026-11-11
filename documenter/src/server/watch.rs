@@ -30,7 +30,7 @@ impl WorkspaceWatcher {
         is_note: impl Fn(&Path) -> bool + Send + 'static,
     ) -> anyhow::Result<(Self, mpsc::UnboundedReceiver<Change>)> {
         let event_root = root.to_path_buf();
-        let (events, mut raw) = mpsc::unbounded_channel();
+        let (events, raw) = mpsc::unbounded_channel();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let Ok(event) = event else { return };
@@ -51,21 +51,7 @@ impl WorkspaceWatcher {
         watcher.watch(notes_dir, RecursiveMode::Recursive)?;
 
         let (changes, receiver) = mpsc::unbounded_channel();
-        let task = tokio::spawn(async move {
-            while let Some(mut change) = raw.recv().await {
-                loop {
-                    match tokio::time::timeout(Duration::from_millis(150), raw.recv()).await {
-                        Ok(Some(Change::Workspace)) => change = Change::Workspace,
-                        Ok(Some(Change::Notes)) => {}
-                        Ok(None) => return,
-                        Err(_) => break,
-                    }
-                }
-                if changes.send(change).is_err() {
-                    return;
-                }
-            }
-        });
+        let task = tokio::spawn(debounce(raw, changes));
         Ok((
             Self {
                 _watcher: watcher,
@@ -79,6 +65,30 @@ impl WorkspaceWatcher {
 impl Drop for WorkspaceWatcher {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+/// How long events must stop for before a burst of them is reported.
+const QUIET: Duration = Duration::from_millis(150);
+
+/// Reports each burst of `raw` changes as one change once `QUIET` passes
+/// without another, following `watch/quint/debounce.qnt`.
+async fn debounce(
+    mut raw: mpsc::UnboundedReceiver<Change>,
+    changes: mpsc::UnboundedSender<Change>,
+) {
+    while let Some(mut change) = raw.recv().await {
+        loop {
+            match tokio::time::timeout(QUIET, raw.recv()).await {
+                Ok(Some(Change::Workspace)) => change = Change::Workspace,
+                Ok(Some(Change::Notes)) => {}
+                Ok(None) => return,
+                Err(_) => break,
+            }
+        }
+        if changes.send(change).is_err() {
+            return;
+        }
     }
 }
 
@@ -153,5 +163,83 @@ mod tests {
         assert_eq!(next().await, Some(Change::Notes));
         std::fs::write(root.join("lib.rs"), "").unwrap();
         assert_eq!(next().await, Some(Change::Workspace));
+    }
+
+    /// Random runs of `quint/debounce.qnt`, as ITF traces, or none without Quint.
+    fn model_runs(count: usize) -> Vec<serde_json::Value> {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let output = tempfile::tempdir().unwrap();
+        let ran = std::process::Command::new("npx")
+            .current_dir(manifest.join("web"))
+            .args(["--no-install", "quint", "run", "--mbt", "--max-steps=12"])
+            .arg(format!("--n-traces={count}"))
+            .arg(format!(
+                "--out-itf={}/run_{{seq}}.itf.json",
+                output.path().display()
+            ))
+            .arg(manifest.join("src/server/watch/quint/debounce.qnt"))
+            .output();
+        if !ran.is_ok_and(|ran| ran.status.success()) {
+            eprintln!("skipped: Quint is not installed (npm install in documenter/web)");
+            return Vec::new();
+        }
+        std::fs::read_dir(output.path())
+            .unwrap()
+            .map(|entry| {
+                serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap()).unwrap()
+            })
+            .collect()
+    }
+
+    fn model_change(value: &serde_json::Value) -> Change {
+        match value["tag"].as_str() {
+            Some("Workspace") => Change::Workspace,
+            Some("Notes") => Change::Notes,
+            other => panic!("not a change: {other:?}"),
+        }
+    }
+
+    /// Lets the debouncer handle what it has been sent and any timeout that is due.
+    async fn settle() {
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// Replays runs of the model against `debounce`: after every step, it has
+    /// reported exactly the changes the model has.
+    #[tokio::test(start_paused = true)]
+    async fn debounces_as_its_model_does() {
+        for run in model_runs(50) {
+            let (events, raw) = mpsc::unbounded_channel();
+            let (changes, mut reported) = mpsc::unbounded_channel();
+            let task = tokio::spawn(debounce(raw, changes));
+            let mut seen = Vec::new();
+            for state in run["states"].as_array().unwrap() {
+                match state["mbt::actionTaken"].as_str().unwrap() {
+                    "init" => {}
+                    "event" => {
+                        let pick = &state["mbt::nondetPicks"]["change"]["value"];
+                        events.send(model_change(pick)).unwrap();
+                        // Well within the quiet period, so the burst goes on.
+                        tokio::time::advance(Duration::from_millis(1)).await;
+                    }
+                    "quiet" => tokio::time::advance(QUIET + Duration::from_millis(1)).await,
+                    other => panic!("unknown action {other}"),
+                }
+                settle().await;
+                while let Ok(change) = reported.try_recv() {
+                    seen.push(change);
+                }
+                let expected = state["reported"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(model_change)
+                    .collect::<Vec<_>>();
+                assert_eq!(seen, expected, "after {state}");
+            }
+            task.abort();
+        }
     }
 }

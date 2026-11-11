@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "models": "node check_models.mjs"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "0.18.1",
