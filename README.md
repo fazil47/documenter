@@ -105,6 +105,11 @@ move any you want to keep into the folder above.
 The module graph's dependency edges come from `use` declarations and from module
 paths used in code, such as `child::run()`.
 
+Clicking a module in the graph focuses it: only the module and everything it
+depends on stay, laid out from the left, and the module shows the start of its
+documentation and an **Inspect** button that opens its page. Escape, clicking the
+background, **Fit**, or the browser's back button return to the full graph.
+
 Projects can contract structural modules into their parents in the graph by
 matching exact final module names:
 

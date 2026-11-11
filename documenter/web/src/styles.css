@@ -128,7 +128,13 @@ input:focus, textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 3px 
 .graph-toolbar { position: relative; z-index: 2; }
 .graph-search { margin-left: auto; }
 .graph-search input { width: min(32vw, 360px); padding: 0.52rem 0.75rem; }
-.graph-canvas { flex: 1; min-height: 0; background: radial-gradient(circle at 50% 45%, var(--canvas-glow) 0, var(--bg) 62%); }
+.graph-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.graph-canvas { position: absolute; inset: 0; background: radial-gradient(circle at 50% 45%, var(--canvas-glow) 0, var(--bg) 62%); }
+.focus-card { position: absolute; top: 0; left: 0; z-index: 1; display: flex; flex-direction: column; gap: 0.35rem; padding: 0.75rem 0.9rem; overflow: hidden; transform-origin: 0 0; pointer-events: none; }
+.focus-card h2 { margin: 0; font-family: "IBM Plex Mono", monospace; font-size: 0.9rem; color: var(--text-strong); }
+.focus-card p { display: -webkit-box; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; color: var(--text-muted); font-size: 0.78rem; line-height: 1.35; }
+.focus-card .button { align-self: flex-start; margin-top: auto; padding: 0.25rem 0.65rem; color: var(--on-accent); background: var(--accent); border-radius: 6px; font-size: 0.78rem; font-weight: 700; pointer-events: auto; }
+.focus-card .button:hover { color: var(--on-accent); background: var(--accent-hover); }
 .warning-strip { padding: 0.42rem 1rem; color: var(--warning-text); background: var(--warning-bg); border-bottom: 1px solid var(--warning-border); font-size: 0.82rem; }
 
 .content-page { min-height: 100vh; }
