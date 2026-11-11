@@ -74,7 +74,9 @@ module note_saving {
 
   // Save (the button, or Cmd-S): send the editor's text and the loaded revision.
   // The server writes only if the file is still at that revision. Its check and
-  // write are one step: an outside write landing between them is not modelled.
+  // write are one step, as `Storage::replace_if_unchanged` makes them: saves take
+  // turns, and an outside write could only land during the rename, which is not
+  // modelled. `server/simulation.rs` runs several pages against the real server.
   action sendSave = all {
     save == NoSave,
     editor != loaded,

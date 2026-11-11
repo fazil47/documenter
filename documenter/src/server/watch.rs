@@ -74,7 +74,7 @@ const QUIET: Duration = Duration::from_millis(150);
 
 /// Reports each burst of `raw` changes as one change once `QUIET` passes
 /// without another, following `watch/quint/debounce.qnt`.
-async fn debounce(
+pub(super) async fn debounce(
     mut raw: mpsc::UnboundedReceiver<Change>,
     changes: mpsc::UnboundedSender<Change>,
 ) {

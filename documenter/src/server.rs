@@ -2,6 +2,8 @@
 
 mod rust_analyzer;
 mod settings;
+#[cfg(test)]
+mod simulation;
 mod storage;
 mod watch;
 
@@ -31,7 +33,7 @@ use uuid::Uuid;
 
 use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer, ServerStatus};
 use self::settings::{Settings, Store as SettingsStore};
-use self::storage::atomic_write;
+use self::storage::{ReplaceError, Storage, atomic_write};
 use self::watch::{Change, WorkspaceWatcher};
 use crate::analysis::Workspace;
 use crate::drawing::{
@@ -70,6 +72,7 @@ struct AppState {
     rust_analyzer: RustAnalyzer,
     settings: SettingsStore,
     notes: Notes,
+    storage: Storage,
 }
 
 struct ModelState {
@@ -109,26 +112,11 @@ impl DocumentationServer {
             rust_analyzer: RustAnalyzer::new(root.clone()),
             settings: SettingsStore::for_user(),
             notes,
+            storage: Storage::disk(),
         });
-        let (watcher, mut changes) =
+        let (watcher, changes) =
             WorkspaceWatcher::start(&root, state.notes.watched(), state.notes.matcher())?;
-        let changed = Arc::downgrade(&state);
-        tokio::spawn(async move {
-            while let Some(change) = changes.recv().await {
-                let Some(state) = changed.upgrade() else {
-                    return;
-                };
-                match change {
-                    Change::Workspace => {
-                        let _ = state.refresh_workspace().await;
-                    }
-                    // Notes are listed from disk on each request, so clients only need to reload.
-                    Change::Notes => {
-                        state.bump_revision().await;
-                    }
-                }
-            }
-        });
+        follow_changes(&state, changes);
         Ok(Self {
             control: Arc::new(Control {
                 state,
@@ -211,6 +199,30 @@ impl Drop for Control {
             running.task.abort();
         }
     }
+}
+
+/// Updates the server as the watcher reports changes, for as long as `state` lives.
+fn follow_changes(
+    state: &Arc<AppState>,
+    mut changes: tokio::sync::mpsc::UnboundedReceiver<Change>,
+) {
+    let changed = Arc::downgrade(state);
+    tokio::spawn(async move {
+        while let Some(change) = changes.recv().await {
+            let Some(state) = changed.upgrade() else {
+                return;
+            };
+            match change {
+                Change::Workspace => {
+                    let _ = state.refresh_workspace().await;
+                }
+                // Notes are listed from disk on each request, so clients only need to reload.
+                Change::Notes => {
+                    state.bump_revision().await;
+                }
+            }
+        }
+    });
 }
 
 impl AppState {
@@ -389,8 +401,11 @@ async fn get_note(
     state.authorize(&query.token)?;
     ensure_module(&state, &query.module).await?;
     let path = state.notes.note(&query.module, &query.file)?;
-    let content =
-        std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading note", error))?;
+    let content = state
+        .storage
+        .read(&path)
+        .await
+        .map_err(|error| ApiError::io("reading note", error))?;
     Ok(Json(NoteResponse {
         module: query.module,
         filename: query.file,
@@ -414,7 +429,7 @@ async fn put_note(
     state.authorize(&query.token)?;
     ensure_module(&state, &query.module).await?;
     let path = state.notes.note(&query.module, &query.file)?;
-    write_if_unchanged(&path, &body, "note")?;
+    save_if_unchanged(&state, &path, &body.content, &body.revision, "note").await?;
     state.bump_revision().await;
     Ok(Json(NoteResponse {
         module: query.module,
@@ -461,18 +476,27 @@ async fn create_note(
     ))
 }
 
-/// Replaces `path` only if its content still matches the revision the client edited.
-fn write_if_unchanged(path: &Path, body: &SaveContent, name: &str) -> ApiResult<()> {
-    let current = std::fs::read_to_string(path)
-        .map_err(|error| ApiError::io(&format!("reading {name}"), error))?;
-    if content_revision(&current) != body.revision {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            format!("the {name} changed on disk; reload before saving"),
-        ));
-    }
-    atomic_write(path, &body.content)
-        .map_err(|error| ApiError::internal(&format!("saving {name}"), error))
+/// Replaces `path` with `content` only if the file still has the revision the
+/// client edited.
+async fn save_if_unchanged(
+    state: &AppState,
+    path: &Path,
+    content: &str,
+    revision: &str,
+    name: &str,
+) -> ApiResult<()> {
+    state
+        .storage
+        .replace_if_unchanged(path, revision, content)
+        .await
+        .map_err(|error| match error {
+            ReplaceError::Changed => ApiError::new(
+                StatusCode::CONFLICT,
+                format!("the {name} changed on disk; reload before saving"),
+            ),
+            ReplaceError::Read(error) => ApiError::io(&format!("reading {name}"), error),
+            ReplaceError::Write(error) => ApiError::internal(&format!("saving {name}"), error),
+        })
 }
 
 #[derive(Serialize)]
@@ -516,7 +540,7 @@ async fn put_source(
         ));
     }
     ensure_safe_existing_file(&state.root, &path)?;
-    write_if_unchanged(&path, &body, "source file")?;
+    save_if_unchanged(&state, &path, &body.content, &body.revision, "source file").await?;
     state
         .refresh_workspace()
         .await
@@ -694,14 +718,6 @@ async fn put_drawing(
     state.authorize(&query.token)?;
     ensure_module(&state, &query.module).await?;
     let path = state.notes.drawing(&query.module, &query.file)?;
-    let current =
-        std::fs::read_to_string(&path).map_err(|error| ApiError::io("reading drawing", error))?;
-    if content_revision(&current) != body.revision {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "the drawing changed on disk; reload before saving",
-        ));
-    }
     if !body.svg.to_ascii_lowercase().contains("<svg") {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -717,7 +733,7 @@ async fn put_drawing(
             "saved drawing must contain an editable scene and white background",
         ));
     }
-    atomic_write(&path, &merged).map_err(|error| ApiError::internal("saving drawing", error))?;
+    save_if_unchanged(&state, &path, &merged, &body.revision, "drawing").await?;
     state.bump_revision().await;
     Ok(Json(DrawingResponse {
         module: query.module,
@@ -1328,6 +1344,7 @@ mod tests {
             rust_analyzer: RustAnalyzer::new(root.clone()),
             settings: SettingsStore::at(Some(root.join("target/test-settings.json"))),
             notes: Notes::at(root.join("target/test-notes"), &root).unwrap(),
+            storage: Storage::disk(),
         }))
     }
 
