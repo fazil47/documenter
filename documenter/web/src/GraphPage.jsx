@@ -3,7 +3,7 @@ import cytoscape from "cytoscape";
 import elk from "cytoscape-elk";
 
 import { routes } from "./api.js";
-import { focusOracles, focusPositions, graphElements, oraclePositions, oracleRoutes } from "./graph.js";
+import { focusOracles, focusPositions, graphElements, oracleLayout } from "./graph.js";
 
 cytoscape.use(elk);
 
@@ -55,30 +55,33 @@ function curveThrough(source, target, points) {
   };
 }
 
-// Adds the oracles for the modules on screen in a row below them, with their
-// imports and dotted links to the modules they cover. Returns their positions
-// and sizes, and the points their links pass through.
+// Gap between the modules and the band of oracles below them.
+const ORACLE_GAP = 80;
+
+// Adds the oracles for the modules on screen in a band below them, each
+// labelled with the module it sits beside, and arrows for their imports.
+// Returns their positions and sizes, and the points long imports pass through.
 function addOracles(graph, workspace, kept, end, sizes) {
   const { oracles, imports } = focusOracles(workspace, new Set(kept.nodes().map((each) => each.id())));
   if (oracles.length === 0) return { positions: {}, sizes: {}, points: [] };
+  const moduleName = (id) => id.split("::").pop();
   const added = graph.add([
-    ...oracles.map((oracle) => ({ group: "nodes", data: { id: oracle.id, label: oracle.label, oracle: true, owner: oracle.owner } })),
-    ...imports.map(([source, target]) => ({ group: "edges", data: { id: `${source} imports ${target}`, source, target, imports: true } })),
-    ...oracles.filter((oracle) => oracle.covers).map((oracle) => ({
-      group: "edges",
-      data: { id: `${oracle.id} covers`, source: oracle.id, target: oracle.covers, covers: true },
+    ...oracles.map((oracle) => ({
+      group: "nodes",
+      data: { id: oracle.id, label: `${oracle.label}\n${moduleName(oracle.owner)}`, oracle: true, owner: oracle.owner },
     })),
+    ...imports.map(([source, target]) => ({ group: "edges", data: { id: `${source} imports ${target}`, source, target, imports: true } })),
   ]);
   const oracleSizes = Object.fromEntries(added.nodes().map((each) => [each.id(), { width: each.outerWidth(), height: each.outerHeight() }]));
-  const bottom = Math.max(...Object.entries(end).map(([id, { y }]) => y + sizes[id].height / 2));
-  const positions = oraclePositions(oracles, imports, end, oracleSizes, bottom);
-  const routes = oracleRoutes(oracles, imports, { ...end, ...positions }, { ...sizes, ...oracleSizes });
-  const at = (id) => positions[id] ?? end[id];
+  const modules = Object.entries(end);
+  const left = Math.min(...modules.map(([id, { x }]) => x - sizes[id].width / 2));
+  const bottom = Math.max(...modules.map(([id, { y }]) => y + sizes[id].height / 2));
+  const { positions, routes } = oracleLayout(oracles, imports, oracleSizes, { left, top: bottom + ORACLE_GAP });
   graph.batch(() => {
     added.nodes().forEach((each) => each.position(positions[each.id()]));
-    for (const edge of added.edges()) {
-      const route = routes.get(edge.id());
-      if (route) edge.style(curveThrough(at(edge.source().id()), at(edge.target().id()), route));
+    for (const each of added.edges()) {
+      const route = routes.get(`${each.source().id()} -> ${each.target().id()}`);
+      if (route) each.style(curveThrough(positions[each.source().id()], positions[each.target().id()], route));
     }
   });
   return { positions, sizes: oracleSizes, points: [...routes.values()].flat() };
@@ -240,9 +243,12 @@ function graphStyle() {
       style: {
         shape: "round-rectangle",
         width: "label",
-        height: 28,
+        height: 40,
         padding: "12px",
         label: "data(label)",
+        // The file, then the module it sits beside.
+        "text-wrap": "wrap",
+        "line-height": 1.4,
         "font-family": "IBM Plex Mono, ui-monospace, monospace",
         "font-size": 11,
         color: color("--text"),
@@ -257,10 +263,6 @@ function graphStyle() {
     {
       selector: "edge[?imports]",
       style: { "curve-style": "bezier", "line-color": color("--accent"), "target-arrow-color": color("--accent"), opacity: 0.8 },
-    },
-    {
-      selector: "edge[?covers]",
-      style: { "curve-style": "bezier", "line-style": "dotted", "target-arrow-shape": "none", "line-color": color("--accent"), opacity: 0.6 },
     },
     {
       selector: "edge.cycle",

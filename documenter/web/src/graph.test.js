@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { focusOracles, focusPositions, graphElements, oraclePositions, oracleRoutes } from "./graph.js";
+import { focusOracles, focusPositions, graphElements, oracleLayout } from "./graph.js";
 
 describe("graphElements", () => {
   it("contracts folded modules into their nearest visible parents", () => {
@@ -252,43 +252,24 @@ describe("focus mode oracles", () => {
   it("shows oracles of modules on screen and what they import", () => {
     const { oracles, imports } = focusOracles(workspace, new Set(["c", "c::query"]));
     expect(oracles).toEqual([
-      { id: "oracle:src/model/oracle/Graph.lean", label: "Graph.lean", owner: "c::model", covers: null },
-      { id: "oracle:src/query/oracle/Query.lean", label: "Query.lean", owner: "c::query", covers: "c::query" },
+      { id: "oracle:src/model/oracle/Graph.lean", label: "Graph.lean", owner: "c::model" },
+      { id: "oracle:src/query/oracle/Query.lean", label: "Query.lean", owner: "c::query" },
     ]);
     expect(imports).toEqual([["oracle:src/query/oracle/Query.lean", "oracle:src/model/oracle/Graph.lean"]]);
   });
 
-  it("places oracles below the modules, under what they cover, without overlapping", () => {
-    fc.assert(fc.property(
-      fc.array(fc.record({ x: fc.integer({ min: -300, max: 300 }), width: fc.integer({ min: 40, max: 160 }) }), { minLength: 1, maxLength: 6 }),
-      (specs) => {
-        const oracles = specs.map((_, index) => ({ id: `o${index}`, covers: `m${index}` }));
-        const modulePositions = Object.fromEntries(specs.map((spec, index) => [`m${index}`, { x: spec.x, y: 0 }]));
-        const sizes = Object.fromEntries(specs.map((spec, index) => [`o${index}`, { width: spec.width, height: 30 }]));
-        const positions = oraclePositions(oracles, [], modulePositions, sizes, 100);
-        const placed = oracles.map((oracle) => ({ ...positions[oracle.id], width: sizes[oracle.id].width })).sort((a, b) => a.x - b.x);
-        for (const position of placed) expect(position.y).toBeGreaterThan(100);
-        for (let index = 1; index < placed.length; index += 1) {
-          expect(placed[index].x - placed[index].width / 2).toBeGreaterThanOrEqual(placed[index - 1].x + placed[index - 1].width / 2);
-        }
-      },
-    ));
-  });
-});
-
-describe("oracleRoutes", () => {
-  it("keeps import lanes below the oracle row and covers links left of their module's column", () => {
-    const oracles = [
-      { id: "o1", covers: "m1" },
-      { id: "o2", covers: null },
-    ];
-    const positions = { m1: { x: 100, y: 0 }, m2: { x: 100, y: 60 }, o1: { x: 100, y: 200 }, o2: { x: 220, y: 200 } };
-    const sizes = { m1: { width: 80, height: 30 }, m2: { width: 120, height: 30 }, o1: { width: 60, height: 28 }, o2: { width: 60, height: 28 } };
-    const routes = oracleRoutes(oracles, [["o1", "o2"]], positions, sizes);
-    for (const point of routes.get("o1 imports o2")) expect(point.y).toBeGreaterThan(214);
-    const covers = routes.get("o1 covers");
-    // Left of the widest module in the column (m2 spans 40..160).
-    expect(covers[1].x).toBeLessThan(40);
-    expect(covers.at(-1)).toEqual({ x: covers[1].x, y: 0 });
+  it("lays oracles out in a band, each left of what it imports", () => {
+    fc.assert(fc.property(focusGraph, ({ kept, edges, sizes }) => {
+      // Oracle imports never form cycles, so only keep edges to later oracles.
+      const imports = edges.filter(([source, target]) => source < target);
+      const oracles = [...kept].map((id) => ({ id }));
+      const { positions } = oracleLayout(oracles, imports, sizes, { left: 10, top: 500 });
+      expect(Object.keys(positions).sort()).toEqual([...kept].sort());
+      for (const [id, { x, y }] of Object.entries(positions)) {
+        expect(x - sizes[id].width / 2).toBeGreaterThanOrEqual(10 - 1e-9);
+        expect(y - sizes[id].height / 2).toBeGreaterThanOrEqual(500 - 1e-9);
+      }
+      for (const [source, target] of imports) expect(positions[source].x).toBeLessThan(positions[target].x);
+    }));
   });
 });
