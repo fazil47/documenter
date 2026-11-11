@@ -3,3 +3,5 @@
 /documenter_zed/extension.wasm
 /documenter_zed/target
 /documenter/web/node_modules
+/.lake
+.DS_Store
