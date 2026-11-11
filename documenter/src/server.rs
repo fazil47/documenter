@@ -1,6 +1,5 @@
 //! Local documentation server and repository write boundary.
 
-mod notes;
 mod rust_analyzer;
 mod settings;
 mod storage;
@@ -30,7 +29,6 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
-use self::notes::{Note, Notes, note_title};
 use self::rust_analyzer::{NavigationError, NavigationKind, RustAnalyzer, ServerStatus};
 use self::settings::{Settings, Store as SettingsStore};
 use self::storage::atomic_write;
@@ -40,6 +38,7 @@ use crate::drawing::{
     create_empty_drawing_svg, extract_scene_from_svg, has_embedded_scene,
     has_opaque_white_background, merge_export_svg_with_scene,
 };
+use crate::notes::{self, Note, Notes, note_title};
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 

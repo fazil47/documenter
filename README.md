@@ -55,6 +55,23 @@ authenticated URL as `documenter: serving <url>`, opens it in the default
 browser unless `--no-open` is given, and runs until `Ctrl-C`. File changes are
 picked up by the server's own watcher.
 
+### From a terminal or a coding agent
+
+The same analysis answers questions as plain text, without a server or a
+browser. Module names are full ids or unique suffixes such as `server::watch`:
+
+```sh
+documenter modules              # every module as a tree, with its file and summary
+documenter module server        # docs, public items with lines, dependencies, notes
+documenter graph                # each module and the modules it uses
+documenter graph --json         # every module with its docs and items, and every edge
+documenter path lsp watch       # the shortest chain of dependencies between two modules
+```
+
+A module can also be named by its file, such as `documenter/src/server.rs`.
+Each command takes `--root` like `documenter serve`. A module's notes folder is
+listed by `documenter module`, so an agent can read or add notes there.
+
 ### Zed
 
 Install the native language server, then install the adapter in

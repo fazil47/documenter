@@ -6,3 +6,4 @@
 - Use underscores instead of hyphens for project-owned directory, module, and crate names.
 - Expose only what consumers actually need. Keep implementation details private.
 - After implementation, use a separate sub-agent review pass to check module depth and unnecessary exposure, then address its findings before finishing.
+- To get oriented, run `documenter modules` and `documenter module <name>` (see the README) before reading files one by one. Without an installed `documenter`, use `cargo run -q -p documenter -- modules`.

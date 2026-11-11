@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use serde::Serialize;
 
-pub(super) struct Notes {
+pub(crate) struct Notes {
     /// `~/.documenter/notes`, shared by every workspace.
     base: PathBuf,
     /// This workspace's folder in `base`, created with its first note.
@@ -16,14 +16,14 @@ pub(super) struct Notes {
 }
 
 #[derive(Serialize)]
-pub(super) struct Note {
+pub(crate) struct Note {
     filename: String,
     title: String,
 }
 
 /// Why a note or drawing path was refused.
 #[derive(Debug)]
-pub(super) enum Error {
+pub(crate) enum Error {
     /// The name is not a plain `letters, numbers, _ and -` file name.
     Name(&'static str),
     Missing,
@@ -33,6 +33,16 @@ pub(super) enum Error {
     Io(std::io::Error),
 }
 
+impl Note {
+    pub(crate) fn filename(&self) -> &str {
+        &self.filename
+    }
+
+    pub(crate) fn title(&self) -> &str {
+        &self.title
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
@@ -40,7 +50,7 @@ impl From<std::io::Error> for Error {
 }
 
 impl Notes {
-    pub(super) fn for_workspace(workspace_root: &Path) -> anyhow::Result<Self> {
+    pub(crate) fn for_workspace(workspace_root: &Path) -> anyhow::Result<Self> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|home| home.is_absolute())
@@ -50,7 +60,7 @@ impl Notes {
 
     /// Notes for `workspace_root` under `base`, in a folder named after the
     /// workspace's absolute path with its separators as dashes.
-    pub(super) fn at(base: PathBuf, workspace_root: &Path) -> anyhow::Result<Self> {
+    pub(crate) fn at(base: PathBuf, workspace_root: &Path) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&base).with_context(|| format!("creating {}", base.display()))?;
         let base = base.canonicalize()?;
         let workspace = workspace_root
@@ -63,12 +73,12 @@ impl Notes {
     }
 
     /// The folder to watch for note changes, which exists even before any note does.
-    pub(super) fn watched(&self) -> &Path {
+    pub(crate) fn watched(&self) -> &Path {
         &self.base
     }
 
     /// Whether a path is one of this workspace's notes or drawings, for the watcher.
-    pub(super) fn matcher(&self) -> impl Fn(&Path) -> bool + Send + 'static {
+    pub(crate) fn matcher(&self) -> impl Fn(&Path) -> bool + Send + 'static {
         let root = self.root.clone();
         move |path| {
             path.starts_with(&root) && (has_extension(path, "md") || has_extension(path, "svg"))
@@ -76,7 +86,7 @@ impl Notes {
     }
 
     /// Every module's notes, sorted by title; modules without notes are left out.
-    pub(super) fn notes(
+    pub(crate) fn notes(
         &self,
         module_ids: impl IntoIterator<Item = String>,
     ) -> BTreeMap<String, Vec<Note>> {
@@ -90,24 +100,24 @@ impl Notes {
     }
 
     /// An existing note of a module; the caller checks that the module exists.
-    pub(super) fn note(&self, module_id: &str, filename: &str) -> Result<PathBuf, Error> {
+    pub(crate) fn note(&self, module_id: &str, filename: &str) -> Result<PathBuf, Error> {
         let filename = plain_name(filename, "md", NOTE_NAME)?;
-        self.existing(self.module_dir(module_id).join(filename))
+        self.existing(self.folder(module_id).join(filename))
     }
 
     /// Where to create a note named `name` (`.md` optional); returns its path and filename.
-    pub(super) fn new_note(&self, module_id: &str, name: &str) -> Result<(PathBuf, String), Error> {
+    pub(crate) fn new_note(&self, module_id: &str, name: &str) -> Result<(PathBuf, String), Error> {
         let filename = plain_name(name, "md", NOTE_NAME)?;
         Ok((self.fresh(module_id, &filename)?, filename))
     }
 
-    pub(super) fn drawing(&self, module_id: &str, filename: &str) -> Result<PathBuf, Error> {
+    pub(crate) fn drawing(&self, module_id: &str, filename: &str) -> Result<PathBuf, Error> {
         let filename = plain_name(filename, "svg", DRAWING_NAME)?;
-        self.existing(self.module_dir(module_id).join(filename))
+        self.existing(self.folder(module_id).join(filename))
     }
 
     /// Where to create a drawing named `name` (`.svg` optional); returns its path and filename.
-    pub(super) fn new_drawing(
+    pub(crate) fn new_drawing(
         &self,
         module_id: &str,
         name: &str,
@@ -116,7 +126,8 @@ impl Notes {
         Ok((self.fresh(module_id, &filename)?, filename))
     }
 
-    fn module_dir(&self, module_id: &str) -> PathBuf {
+    /// Where a module's notes and drawings live; it may not exist yet.
+    pub(crate) fn folder(&self, module_id: &str) -> PathBuf {
         module_id
             .split("::")
             .fold(self.root.clone(), |path, segment| path.join(segment))
@@ -134,7 +145,7 @@ impl Notes {
     }
 
     fn fresh(&self, module_id: &str, filename: &str) -> Result<PathBuf, Error> {
-        let directory = self.module_dir(module_id);
+        let directory = self.folder(module_id);
         std::fs::create_dir_all(&directory)?;
         let directory = directory.canonicalize()?;
         if !directory.starts_with(&self.root) {
@@ -147,8 +158,9 @@ impl Notes {
         Ok(path)
     }
 
-    fn module_notes(&self, module_id: &str) -> Vec<Note> {
-        let Ok(entries) = std::fs::read_dir(self.module_dir(module_id)) else {
+    /// A module's notes, sorted by title.
+    pub(crate) fn module_notes(&self, module_id: &str) -> Vec<Note> {
+        let Ok(entries) = std::fs::read_dir(self.folder(module_id)) else {
             return Vec::new();
         };
         let mut notes = entries
@@ -169,7 +181,7 @@ impl Notes {
 }
 
 /// A note's first `# ` heading, or its filename.
-pub(super) fn note_title(content: &str, path: &Path) -> String {
+pub(crate) fn note_title(content: &str, path: &Path) -> String {
     content
         .lines()
         .find_map(|line| line.strip_prefix("# ").map(str::trim))

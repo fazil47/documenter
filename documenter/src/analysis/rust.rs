@@ -5,11 +5,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use syn::visit::{self, Visit};
-use syn::{Attribute, Expr, Item, ItemMod, ItemUse, Lit, Meta, UseTree};
+use syn::{
+    Attribute, Expr, ImplItem, Item, ItemMod, ItemUse, Lit, Meta, Type, UseTree, Visibility,
+};
 
 use super::cargo::Package;
 use super::cfg::{self, CfgSet};
-use super::{Edge, Module};
+use super::{ApiItem, Edge, Module, summary};
 
 pub(super) struct Analysis {
     pub(super) modules: Vec<Module>,
@@ -102,13 +104,13 @@ impl<'a> ContextState<'a> {
             Err(error) => {
                 self.warnings
                     .push(format!("failed to parse {}: {error}", file_path.display()));
-                self.insert_file_module(module_id, file_path, declaration_docs);
+                self.insert_file_module(module_id, file_path, declaration_docs, Vec::new());
                 return Ok(());
             }
         };
 
         let docs = combine_docs(&declaration_docs, &doc_text(&parsed.attrs));
-        self.insert_file_module(module_id, file_path, docs);
+        self.insert_file_module(module_id, file_path, docs, public_items(&parsed.items, cfg));
         self.uses
             .entry(module_id.to_owned())
             .or_default()
@@ -138,7 +140,7 @@ impl<'a> ContextState<'a> {
         let docs = doc_text(&item.attrs);
 
         if let Some((_, items)) = &item.content {
-            self.insert_inline_module(&id, docs);
+            self.insert_inline_module(&id, docs, public_items(items, cfg));
             self.uses
                 .entry(id.clone())
                 .or_default()
@@ -158,12 +160,18 @@ impl<'a> ContextState<'a> {
             self.warnings.push(format!(
                 "module `{id}` was declared but no source file was found"
             ));
-            self.insert_inline_module(&id, docs);
+            self.insert_inline_module(&id, docs, Vec::new());
         }
         Ok(())
     }
 
-    fn insert_file_module(&mut self, id: &str, file_path: &Path, docs: String) {
+    fn insert_file_module(
+        &mut self,
+        id: &str,
+        file_path: &Path,
+        docs: String,
+        items: Vec<ApiItem>,
+    ) {
         self.modules.insert(
             id.to_owned(),
             Module {
@@ -172,18 +180,20 @@ impl<'a> ContextState<'a> {
                 name: module_name(id),
                 docs,
                 folded: false,
+                items,
                 source_path: Some(file_path.to_path_buf()),
             },
         );
     }
 
-    fn insert_inline_module(&mut self, id: &str, docs: String) {
+    fn insert_inline_module(&mut self, id: &str, docs: String, items: Vec<ApiItem>) {
         self.modules.entry(id.to_owned()).or_insert_with(|| Module {
             id: id.to_owned(),
             crate_name: crate_name(id).to_owned(),
             name: module_name(id),
             docs,
             folded: false,
+            items,
             source_path: None,
         });
     }
@@ -258,6 +268,170 @@ fn combine_docs(outer: &str, inner: &str) -> String {
         ("", inner) => inner.to_owned(),
         (outer, "") => outer.to_owned(),
         (outer, inner) => format!("{outer}\n\n{inner}"),
+    }
+}
+
+// The items a module makes visible outside itself, including re-exports and
+// the public methods of its types; trait impls are left out.
+fn public_items(items: &[Item], cfg: &CfgSet) -> Vec<ApiItem> {
+    let mut output = Vec::new();
+    let mut push =
+        |visibility: &Visibility, kind, name: String, line: usize, attributes: &[Attribute]| {
+            if let Some(visibility) = visibility_text(visibility) {
+                output.push(ApiItem {
+                    visibility,
+                    kind,
+                    name,
+                    line,
+                    summary: summary(&doc_text(attributes)),
+                });
+            }
+        };
+    let line = |ident: &syn::Ident| ident.span().start().line;
+    for item in items {
+        if !cfg::active(cfg, item_attrs(item)) {
+            continue;
+        }
+        match item {
+            Item::Fn(item) => push(
+                &item.vis,
+                "fn",
+                item.sig.ident.to_string(),
+                line(&item.sig.ident),
+                &item.attrs,
+            ),
+            Item::Struct(item) => push(
+                &item.vis,
+                "struct",
+                item.ident.to_string(),
+                line(&item.ident),
+                &item.attrs,
+            ),
+            Item::Enum(item) => push(
+                &item.vis,
+                "enum",
+                item.ident.to_string(),
+                line(&item.ident),
+                &item.attrs,
+            ),
+            Item::Union(item) => push(
+                &item.vis,
+                "union",
+                item.ident.to_string(),
+                line(&item.ident),
+                &item.attrs,
+            ),
+            Item::Trait(item) => push(
+                &item.vis,
+                "trait",
+                item.ident.to_string(),
+                line(&item.ident),
+                &item.attrs,
+            ),
+            Item::Type(item) => push(
+                &item.vis,
+                "type",
+                item.ident.to_string(),
+                line(&item.ident),
+                &item.attrs,
+            ),
+            Item::Const(item) => push(
+                &item.vis,
+                "const",
+                item.ident.to_string(),
+                line(&item.ident),
+                &item.attrs,
+            ),
+            Item::Static(item) => push(
+                &item.vis,
+                "static",
+                item.ident.to_string(),
+                line(&item.ident),
+                &item.attrs,
+            ),
+            Item::Use(item) => {
+                let mut names = Vec::new();
+                reexported_names(&item.tree, "", &mut names);
+                for name in names {
+                    push(
+                        &item.vis,
+                        "use",
+                        name,
+                        item.use_token.span.start().line,
+                        &item.attrs,
+                    );
+                }
+            }
+            Item::Impl(item) if item.trait_.is_none() => {
+                let Type::Path(self_type) = item.self_ty.as_ref() else {
+                    continue;
+                };
+                let Some(type_name) = self_type.path.segments.last() else {
+                    continue;
+                };
+                for method in &item.items {
+                    if let ImplItem::Fn(method) = method
+                        && cfg::active(cfg, &method.attrs)
+                    {
+                        let name = format!("{}::{}", type_name.ident, method.sig.ident);
+                        push(
+                            &method.vis,
+                            "fn",
+                            name,
+                            line(&method.sig.ident),
+                            &method.attrs,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    output
+}
+
+// How a `pub use` tree reads: `a::B as C`, `a::*`, and `a` for `a::{self}`.
+fn reexported_names(tree: &UseTree, prefix: &str, output: &mut Vec<String>) {
+    match tree {
+        UseTree::Path(path) => {
+            reexported_names(&path.tree, &format!("{prefix}{}::", path.ident), output);
+        }
+        UseTree::Name(name) if name.ident == "self" => {
+            output.push(prefix.trim_end_matches("::").to_owned());
+        }
+        UseTree::Name(name) => output.push(format!("{prefix}{}", name.ident)),
+        UseTree::Rename(rename) => {
+            output.push(format!("{prefix}{} as {}", rename.ident, rename.rename));
+        }
+        UseTree::Glob(_) => output.push(format!("{prefix}*")),
+        UseTree::Group(group) => {
+            for tree in &group.items {
+                reexported_names(tree, prefix, output);
+            }
+        }
+    }
+}
+
+fn visibility_text(visibility: &Visibility) -> Option<String> {
+    match visibility {
+        Visibility::Public(_) => Some("pub".to_owned()),
+        // `pub(self)` is private.
+        Visibility::Restricted(restricted) if restricted.path.is_ident("self") => None,
+        Visibility::Restricted(restricted) => {
+            let path = restricted
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            Some(if restricted.in_token.is_some() {
+                format!("pub(in {path})")
+            } else {
+                format!("pub({path})")
+            })
+        }
+        Visibility::Inherited => None,
     }
 }
 
