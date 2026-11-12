@@ -4,7 +4,7 @@ import elk from "cytoscape-elk";
 
 import { routes } from "./api.js";
 import LanguageIcon from "./LanguageIcon.jsx";
-import { focusPositions, graphElements, oracleElements, shownModule } from "./graph.js";
+import { graphElements, oracleElements, shownModule } from "./graph.js";
 
 cytoscape.use(elk);
 
@@ -30,87 +30,17 @@ const layoutOptions = {
     : {}),
 };
 
-// Moving between the full graph and a focused one animates node positions.
+// Camera moves, and Reset layout's node moves.
 const animation = { animate: true, animationDuration: 450, animationEasing: "ease-in-out-cubic" };
+const cameraMove = { duration: animation.animationDuration, easing: animation.animationEasing };
 
 const PADDING = 48;
 
-// Node positions by id, for nodes placed directly (compound parents follow their children).
-function positions(nodes) {
-  return Object.fromEntries(nodes.filter((node) => !node.isParent()).map((node) => [node.id(), { ...node.position() }]));
-}
-
-// Stops running node and view animations, so a new layout starts from rest.
-function interrupt(graph) {
-  graph.stop(true);
-  graph.nodes().stop(true);
-}
-
-// A line from `source` to `target` through `points`, with rounded corners, as
-// Cytoscape segments: a weight along the source-target line and a distance from it.
-function curveThrough(source, target, points) {
-  const dx = target.x - source.x;
-  const dy = target.y - source.y;
-  const length = Math.hypot(dx, dy) || 1;
-  return {
-    "curve-style": "round-segments",
-    // Weights are along the line between node centers, as computed here.
-    "edge-distances": "node-position",
-    "segment-radius": 40,
-    "segment-weights": points.map((point) => ((point.x - source.x) * dx + (point.y - source.y) * dy) / length ** 2),
-    "segment-distances": points.map((point) => ((point.y - source.y) * dx - (point.x - source.x) * dy) / length),
-  };
-}
-
-// Lays out `node` and its dependencies in columns from the left, then moves the
-// nodes and the view there together, animated unless `animate` is false.
-function focusLayout(graph, node, kept, animate) {
-  interrupt(graph);
-  const nodes = kept.nodes().not(":parent");
-  const sizes = Object.fromEntries(nodes.map((each) => [each.id(), { width: each.outerWidth(), height: each.outerHeight() }]));
-  const edges = kept.edges();
-  const { positions: end, cycles, routes } = focusPositions(
-    node.id(),
-    edges.map((edge) => [edge.source().id(), edge.target().id()]),
-    sizes,
-  );
-  graph.batch(() => {
-    edges.addClass("direct");
-    edges.filter((edge) => cycles.has(`${edge.source().id()} -> ${edge.target().id()}`)).addClass("cycle");
-    for (const edge of edges) {
-      const route = routes.get(`${edge.source().id()} -> ${edge.target().id()}`);
-      if (route) edge.addClass("routed").style(curveThrough(end[edge.source().id()], end[edge.target().id()], route));
-    }
-  });
-  const box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
-  for (const [id, { x, y }] of Object.entries(end)) {
-    box.x1 = Math.min(box.x1, x - sizes[id].width / 2);
-    box.x2 = Math.max(box.x2, x + sizes[id].width / 2);
-    box.y1 = Math.min(box.y1, y - sizes[id].height / 2);
-    box.y2 = Math.max(box.y2, y + sizes[id].height / 2);
-  }
-  const width = graph.width();
-  const height = graph.height();
-  const fit = Math.min(1, (width - 2 * PADDING) / (box.x2 - box.x1), (height - 2 * PADDING) / (box.y2 - box.y1));
-  const zoom = Math.max(graph.minZoom(), fit);
-  const view = { zoom, pan: { x: PADDING - box.x1 * zoom, y: (height - (box.y2 - box.y1) * zoom) / 2 - box.y1 * zoom } };
-  if (!animate) {
-    graph.batch(() => nodes.forEach((each) => each.position(end[each.id()])));
-    graph.viewport(view);
-    return;
-  }
-  nodes.layout({ name: "preset", positions: (each) => end[each.id()], fit: false, ...animation }).run();
-  graph.animate(view, { duration: animation.animationDuration, easing: animation.animationEasing });
-}
 
 // Undoes what focusing changed on the graph's elements.
 function clearFocus(graph) {
-  graph.edges(".routed").removeStyle();
-  graph.elements().removeClass("hidden focus quiet direct cycle routed");
+  graph.elements().removeClass("faded focus");
 }
-
-// The focused module's node grows to this size, and an HTML card is drawn over it.
-const CARD = { width: 300, height: 144 };
 
 function focusFromUrl() {
   return new URLSearchParams(window.location.search).get("focus");
@@ -126,33 +56,23 @@ function summary(docs) {
   return (docs || "").trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ").replaceAll("`", "");
 }
 
-// The viewport that centers `box`, zoomed to fit but never past full size, so
-// a small graph is not blown up.
-function centeredView(graph, box) {
-  const fit = Math.min(1, (graph.width() - 2 * PADDING) / (box.x2 - box.x1), (graph.height() - 2 * PADDING) / (box.y2 - box.y1));
+// The focus card's width and margins: in focus mode the camera keeps clear of it
+// when the canvas is wide enough.
+const CARD_INSET = 332;
+
+// The viewport that centers `box` right of a `left` inset, zoomed to fit but never
+// past full size, so a small graph is not blown up.
+function centeredView(graph, box, left = 0) {
+  const width = graph.width() - left;
+  const fit = Math.min(1, (width - 2 * PADDING) / (box.x2 - box.x1), (graph.height() - 2 * PADDING) / (box.y2 - box.y1));
   const zoom = Math.max(graph.minZoom(), fit);
   return {
     zoom,
-    pan: { x: (graph.width() - (box.x1 + box.x2) * zoom) / 2, y: (graph.height() - (box.y1 + box.y2) * zoom) / 2 },
+    pan: { x: left + (width - (box.x1 + box.x2) * zoom) / 2, y: (graph.height() - (box.y1 + box.y2) * zoom) / 2 },
   };
 }
 
-function fitView(graph) {
-  graph.viewport(centeredView(graph, graph.elements(":visible").boundingBox()));
-}
-
-// The box around `nodes` if they were at `at`, positions by id.
-function boxAt(nodes, at) {
-  const box = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
-  for (const node of nodes) {
-    const { x, y } = at[node.id()];
-    box.x1 = Math.min(box.x1, x - node.outerWidth() / 2);
-    box.x2 = Math.max(box.x2, x + node.outerWidth() / 2);
-    box.y1 = Math.min(box.y1, y - node.outerHeight() / 2);
-    box.y2 = Math.max(box.y2, y + node.outerHeight() / 2);
-  }
-  return box;
-}
+const fullView = (graph) => centeredView(graph, graph.elements().boundingBox());
 
 // What the focus card shows for a module: its docs and links to its oracles,
 // and those of modules folded into it.
@@ -212,7 +132,8 @@ function graphStyle() {
       },
     },
     {
-      selector: "node[fileBacked = false]",
+      // A module without a file of its own, such as a package with no index.
+      selector: "node[item][!fileBacked]",
       style: {
         "border-style": "dashed",
         "background-color": color("--surface-hover"),
@@ -243,51 +164,35 @@ function graphStyle() {
         opacity: 0.72,
       },
     },
+    // Focus mode: what the focused node does not depend on fades.
     {
-      selector: ".hidden",
-      style: { display: "none" },
+      selector: ".faded",
+      style: { opacity: 0.15 },
     },
-    // Focus mode: crates are not boxed, and each edge is its own curve.
+    // A box's opacity multiplies into its children's, so a faded box fades only itself.
     {
-      selector: "node[box].quiet",
-      // Invisible and not grabbable, so pressing inside it acts on the background.
-      style: { "background-opacity": 0, "border-width": 0, "text-opacity": 0, events: "no" },
-    },
-    {
-      selector: "edge.direct",
-      style: { "curve-style": "bezier", opacity: 0.85 },
-    },
-    {
-      selector: "edge.cycle",
-      style: { "line-style": "dashed", "line-dash-pattern": [6, 4] },
+      selector: "node[box].faded",
+      style: { opacity: 1, "background-opacity": 0.2, "border-opacity": 0.2 },
     },
     {
       selector: "node.focus",
       style: {
-        width: CARD.width,
-        height: CARD.height,
-        padding: 0,
-        "text-opacity": 0,
         "border-color": color("--accent"),
         "border-width": 2,
         "border-style": "solid",
-        "background-color": color("--surface"),
       },
     },
   ];
 }
 
-// The module graph, or the oracle graph. Clicking a node focuses it: only it
-// and what it depends on (or imports) stay, laid out from the left, and it
-// becomes a card with its docs.
+// The module graph, or the oracle graph. Clicking a node focuses it: the camera
+// moves to it and what it depends on (or imports), everything else fades, and a
+// card shows its docs.
 export default function GraphPage({ workspace }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
-  const cardRef = useRef(null);
   // Each crate, package or module box's label overlay, by box id.
   const labelsRef = useRef(new Map());
-  // Node positions in the full graph, to return to when leaving focus.
-  const home = useRef(null);
   const [query, setQuery] = useState("");
   // The graph whose initial layout has finished, so focus can be applied to it.
   const [readyGraph, setReadyGraph] = useState(null);
@@ -304,9 +209,11 @@ export default function GraphPage({ workspace }) {
     owner: module.id,
     shown: shownModule(workspace, module.id),
   }))), [workspace]);
+  // A folded module has no node of its own, so its focus goes to the node showing it.
+  const focused = focus && view === "modules" ? shownModule(workspace, focus) : focus;
   const card = view === "oracles"
-    ? oracleCard(oracles.find((oracle) => oracle.path === focus))
-    : moduleCard(workspace.modules.find((module) => module.id === focus), oracles);
+    ? oracleCard(oracles.find((oracle) => oracle.path === focused))
+    : moduleCard(workspace.modules.find((module) => module.id === focused), oracles);
 
   // Focus and view changes are browser history entries, so back steps out of them.
   const focusOn = useCallback((id) => {
@@ -357,41 +264,29 @@ export default function GraphPage({ workspace }) {
     graph.on("tap", (event) => {
       if (event.target === graph) focusOn(null);
     });
-    // Keeps the card over the focused node while panning, zooming, and animating.
+    // Keeps the box labels above their boxes while panning, zooming, and animating.
     graph.on("render", () => {
-      // Box labels sit above their boxes, and hide with them in focus mode and
-      // while the graph is hidden for its first layout.
+      // Hidden while the graph is hidden for its first layout, and faded with their boxes.
       const laidOut = containerRef.current?.style.visibility !== "hidden";
       for (const [id, label] of labelsRef.current) {
         const box = graph.getElementById(id);
-        if (!laidOut || box.empty() || !box.visible() || box.hasClass("quiet")) {
+        if (!laidOut || box.empty()) {
           label.style.display = "none";
           continue;
         }
         const bounds = box.renderedBoundingBox({ includeLabels: false });
         label.style.display = "";
+        label.style.opacity = box.hasClass("faded") ? 0.15 : 1;
         label.style.transform = `translate(${bounds.x1}px, ${bounds.y1}px) scale(${graph.zoom()}) translateY(calc(-100% - 8px))`;
       }
-      const card = cardRef.current;
-      const node = graph.$("node.focus");
-      if (!card) return;
-      if (node.empty()) {
-        card.style.display = "none";
-        return;
-      }
-      const box = node.renderedBoundingBox({ includeLabels: false });
-      card.style.display = "";
-      card.style.transform = `translate(${box.x1}px, ${box.y1}px) scale(${graph.zoom()})`;
     });
     graph.scratch("view", view);
     graphRef.current = graph;
-    home.current = null;
     // Hidden until laid out and focused, so the unarranged graph never shows.
     containerRef.current.style.visibility = "hidden";
     const initial = graph.layout({ ...layoutOptions, fit: false });
     initial.one("layoutstop", () => {
       if (graphRef.current !== graph) return;
-      fitView(graph);
       setReadyGraph(graph);
     });
     initial.run();
@@ -416,29 +311,20 @@ export default function GraphPage({ workspace }) {
     containerRef.current.style.visibility = "";
     // Shows the box labels, which stay hidden until now (see the render handler).
     graph.emit("render");
-    const node = focus ? graph.getElementById(focus) : graph.collection();
-    if (node.empty()) {
-      if (!home.current) return;
-      interrupt(graph);
-      clearFocus(graph);
-      const saved = home.current;
-      home.current = null;
-      const nodes = graph.nodes().not(":parent");
-      nodes.layout({ name: "preset", positions: (each) => saved[each.id()], fit: false, ...animation }).run();
-      graph.animate(centeredView(graph, boxAt(nodes, saved)), { duration: animation.animationDuration, easing: animation.animationEasing });
-      return;
-    }
-    home.current ??= positions(graph.nodes());
+    const node = focused ? graph.getElementById(focused) : graph.collection();
     const kept = node.union(node.successors());
+    graph.stop(true);
     graph.batch(() => {
       clearFocus(graph);
-      graph.elements().addClass("hidden");
-      kept.union(kept.nodes().ancestors()).removeClass("hidden");
-      kept.nodes().ancestors().addClass("quiet");
+      if (node.empty()) return;
+      graph.elements().not(kept.union(kept.nodes().ancestors())).addClass("faded");
       node.addClass("focus");
     });
-    focusLayout(graph, node, kept, animate);
-  }, [focus, readyGraph, view]);
+    const inset = graph.width() >= 2 * CARD_INSET ? CARD_INSET : 0;
+    const camera = node.empty() ? fullView(graph) : centeredView(graph, kept.nodes().boundingBox(), inset);
+    if (animate) graph.animate(camera, cameraMove);
+    else graph.viewport(camera);
+  }, [focused, readyGraph, view]);
 
   function search(event) {
     event.preventDefault();
@@ -454,12 +340,13 @@ export default function GraphPage({ workspace }) {
   function resetLayout() {
     const graph = graphRef.current;
     focusOn(null);
-    home.current = null;
     if (!graph) return;
-    interrupt(graph);
+    graph.stop(true);
+    graph.nodes().stop(true);
     clearFocus(graph);
-    const layout = graph.layout({ ...layoutOptions, ...animation });
-    layout.one("layoutstop", () => fitView(graph));
+    // The camera follows once the nodes have moved, so it never races the layout's own.
+    const layout = graph.layout({ ...layoutOptions, ...animation, fit: false });
+    layout.one("layoutstop", () => graph.animate(fullView(graph), cameraMove));
     layout.run();
   }
 
@@ -482,7 +369,7 @@ export default function GraphPage({ workspace }) {
             placeholder={view === "oracles" ? "Find an oracle…" : "Find a module…"}
           />
         </form>
-        <button type="button" onClick={() => (focus ? focusOn(null) : graphRef.current && fitView(graphRef.current))}>Fit</button>
+        <button type="button" onClick={() => (focus ? focusOn(null) : graphRef.current?.animate(fullView(graphRef.current), cameraMove))}>Fit</button>
         <button type="button" onClick={resetLayout}>Reset layout</button>
       </header>
       {workspace.warnings.length > 0 && (
@@ -504,26 +391,24 @@ export default function GraphPage({ workspace }) {
             {box.label}
           </div>
         ))}
-        <section className="focus-card" ref={cardRef} style={{ display: "none", width: CARD.width, height: CARD.height }}>
-          {card && (
-            <>
-              <h2>{card.title}</h2>
-              <p>{card.summary}</p>
-              {card.links.length > 0 && (
-                <div className="focus-links">
-                  {card.label}{" "}
-                  {card.links.map((link, index) => (
-                    <span key={link.href}>
-                      {index > 0 && ", "}
-                      <a href={link.href}>{link.text}</a>
-                    </span>
-                  ))}
-                </div>
-              )}
-              <a className="button" href={card.inspect}>Inspect</a>
-            </>
-          )}
-        </section>
+        {card && (
+          <section className="focus-card">
+            <h2>{card.title}</h2>
+            <p>{card.summary}</p>
+            {card.links.length > 0 && (
+              <div className="focus-links">
+                {card.label}{" "}
+                {card.links.map((link, index) => (
+                  <span key={link.href}>
+                    {index > 0 && ", "}
+                    <a href={link.href}>{link.text}</a>
+                  </span>
+                ))}
+              </div>
+            )}
+            <a className="button" href={card.inspect}>Inspect</a>
+          </section>
+        )}
       </div>
     </main>
   );
