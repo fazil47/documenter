@@ -13,20 +13,37 @@ import typescriptObjects from "./helix/typescript_textobjects.scm?raw";
 
 const INITIAL_STATUS = { mode: "normal", pending: "", prompt: undefined, message: undefined, recording: undefined };
 
-function lineElements(container) {
-  const host = container.firstElementChild;
-  return (host?.shadowRoot ?? host)?.querySelectorAll("[data-content] > [data-line-index]") ?? [];
+// Pierre's shadow root, inside the scrolling container.
+function pierreRoot(container) {
+  return container.querySelector("diffs-container")?.shadowRoot;
 }
 
-// Visible lines and page size of the scrolling wrapper around Pierre's lines.
-function viewport(container) {
-  const lines = lineElements(container);
-  if (lines.length === 0) return {};
+// Pierre renders only the lines in and near view, so a line may have no element.
+function lineElement(container, line) {
+  return pierreRoot(container)?.querySelector(`[data-content] > [data-line-index="${line}"]`) ?? undefined;
+}
+
+// Where every line is, rendered or not, from any line that is: lines do not wrap,
+// so all have one height. `top(line)` is in viewport coordinates.
+function lineGeometry(container) {
+  const anchor = pierreRoot(container)?.querySelector("[data-content] > [data-line-index]");
+  if (!anchor) return undefined;
+  const box = anchor.getBoundingClientRect();
+  const height = box.height || 20;
+  const index = Number(anchor.dataset.lineIndex);
+  return { height, top: (line) => box.top + (line - index) * height };
+}
+
+// Visible lines and page size of the scrolling wrapper around Pierre's lines, a
+// text of `lineCount` lines.
+function viewport(container, lineCount) {
+  const geometry = lineGeometry(container);
+  if (!geometry) return {};
   const frame = container.getBoundingClientRect();
-  const height = lines[0].getBoundingClientRect().height || 20;
-  const top = lines[0].getBoundingClientRect().top;
+  const { height } = geometry;
+  const top = geometry.top(0);
   const first = Math.max(0, Math.ceil((frame.top - top) / height));
-  const last = Math.min(lines.length - 1, Math.floor((frame.bottom - top) / height) - 1);
+  const last = Math.min(lineCount - 1, Math.floor((frame.bottom - top) / height) - 1);
   return {
     lineHeight: height,
     pageLines: Math.max(1, Math.floor(container.clientHeight / height)),
@@ -35,19 +52,19 @@ function viewport(container) {
 }
 
 // Where `gw` labels go: over the first characters of each word, in the
-// scrolling container's coordinates so they scroll with the text.
+// scrolling container's coordinates so they scroll with the text. Labels are
+// for visible lines, which Pierre has drawn; any it has not are left out.
 function labelPositions(container, labels) {
-  const lines = lineElements(container);
   const frame = container.getBoundingClientRect();
   // Pierre scrolls long lines inside its code element, beside a sticky gutter.
-  const root = container.firstElementChild?.shadowRoot;
+  const root = pierreRoot(container);
   const code = root?.querySelector("[data-code]");
   const gutter = root?.querySelector("[data-gutter]");
   if (!code) return [];
   const visibleLeft = gutter?.getBoundingClientRect().right ?? code.getBoundingClientRect().left;
   const visibleRight = code.getBoundingClientRect().left + code.clientWidth;
   return labels.flatMap(({ line, character, text }) => {
-    const element = lines[line];
+    const element = lineElement(container, line);
     // Labelled words have at least two characters; the second gives the advance,
     // since character boxes are rounded to whole pixels.
     const [first, second] = element ? characterRects(element, character, 2) : [];
@@ -138,11 +155,10 @@ function scrollToLine(container, line, block) {
     container.scrollTo({ top: 0 });
     return;
   }
-  const element = lineElements(container)[line];
-  if (!element) return;
-  const box = element.getBoundingClientRect();
-  const top = box.top - container.getBoundingClientRect().top - container.clientTop;
-  const room = container.clientHeight - box.height;
+  const geometry = lineGeometry(container);
+  if (!geometry) return;
+  const top = geometry.top(line) - container.getBoundingClientRect().top - container.clientTop;
+  const room = container.clientHeight - geometry.height;
   const hidden = top < 0 || top > room;
   const shift = {
     start: top,
@@ -188,9 +204,12 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     const state = new HelixState();
 
     const snapshot = () => {
-      const view = viewport(container);
+      const text = latest.current.editor.getText();
+      let lineCount = 1;
+      for (let index = text.indexOf("\n"); index >= 0; index = text.indexOf("\n", index + 1)) lineCount += 1;
+      const view = viewport(container, lineCount);
       return {
-        text: latest.current.editor.getText(),
+        text,
         selections: latest.current.editor.getViewState().selections ?? [],
         fileName: latest.current.fileName,
         pageLines: view.pageLines,
@@ -233,7 +252,7 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     const caretSheet = new CSSStyleSheet();
     let headShift;
     const syncCaret = () => {
-      const root = container.firstElementChild?.shadowRoot;
+      const root = pierreRoot(container);
       if (!latest.current.editor || !root) return;
       if (!root.adoptedStyleSheets.includes(caretSheet)) root.adoptedStyleSheets = [...root.adoptedStyleSheets, caretSheet];
       // Insert mode's bar sits where text goes, unshifted.
@@ -264,7 +283,7 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
       } else if (command.type === "scroll") {
         scrollToLine(container, command.line, { center: "center", top: "start", bottom: "end" }[command.align]);
       } else if (command.type === "scrollBy") {
-        container.scrollBy(0, command.lines * (viewport(container).lineHeight ?? 20));
+        container.scrollBy(0, command.lines * (lineGeometry(container)?.height ?? 20));
       } else {
         const error = latest.current.onCommand(command);
         if (error) setStatus((current) => ({ ...current, message: { text: error, error: true } }));
@@ -289,7 +308,7 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     // keydown, Chrome after; both have finished changing the page by compositionend.
     let composition;
 
-    const content = () => container.firstElementChild?.shadowRoot?.querySelector("[data-content]");
+    const content = () => pierreRoot(container)?.querySelector("[data-content]");
 
     // Blurring cancels the composition and fires its compositionend right away.
     // Pierre's own focus keeps its selection instead of adopting the page's.
@@ -323,12 +342,17 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
       const selections = latest.current.editor.getViewState().selections ?? [];
       const first = Math.min(...selections.map((selection) => selection.start.line));
       const last = Math.max(...selections.map((selection) => selection.end.line));
-      const lines = lineElements(container);
+      // Only rendered lines can be drawn into; the composition is at the page's caret, in view.
+      const lines = [];
+      for (let line = first; line <= last; line += 1) {
+        const element = lineElement(container, line);
+        if (element) lines.push(element);
+      }
       composition = {
         insert: state.mode === "insert",
-        lines: [...lines].slice(first, last + 1).map((line) => [line, line.cloneNode(true)]),
-        parent: lines[first]?.parentNode,
-        next: lines[last + 1] ?? null,
+        lines: lines.map((line) => [line, line.cloneNode(true)]),
+        parent: lines[0]?.parentNode,
+        next: lineElement(container, last + 1) ?? null,
       };
       // In Chrome the dead key's keydown has already passed, so cancel without waiting for the next key.
       const pending = composition;
@@ -373,7 +397,7 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
       container.removeEventListener("compositionstart", compositionstart, true);
       container.removeEventListener("compositionend", compositionend, true);
       container.removeEventListener("pointerup", pointerup, true);
-      const root = container.firstElementChild?.shadowRoot;
+      const root = pierreRoot(container);
       if (root) root.adoptedStyleSheets = root.adoptedStyleSheets.filter((sheet) => sheet !== caretSheet);
       engineActions.current = undefined;
     };

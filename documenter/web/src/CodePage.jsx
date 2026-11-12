@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EditProvider, File } from "@pierre/diffs/react";
+import { Virtualizer } from "@pierre/diffs";
+import { EditProvider, File, VirtualizerContext } from "@pierre/diffs/react";
 import { Editor } from "@pierre/diffs/edit";
 
 import { api, routes } from "./api.js";
@@ -168,6 +169,16 @@ export default function CodePage({ moduleId, testFile, workspaceRevision }) {
   const settingsWrite = useRef(Promise.resolve());
   const [editor, setEditor] = useState(undefined);
   const [editorFrame, setEditorFrame] = useState(null);
+  // Renders only the lines in and near view, so the cost of a key or a scroll
+  // does not grow with the file. The editor frame is the scroller it watches;
+  // set up from its ref, as Pierre's own Virtualizer does, the File's ref has
+  // already queued its connection.
+  const [virtualizer] = useState(() => new Virtualizer());
+  const editorFrameRef = useCallback((node) => {
+    setEditorFrame(node);
+    if (node) virtualizer.setup(node);
+    else virtualizer.cleanUp();
+  }, [virtualizer]);
   const draft = useRef("");
   const saveRequested = useRef(false);
   const quitAfterSave = useRef(false);
@@ -461,19 +472,23 @@ export default function CodePage({ moduleId, testFile, workspaceRevision }) {
           <button type="button" onClick={load}>Discard local edits and reload</button>
         </div>
       )}
-      <div ref={setEditorFrame} className={`code-editor ${helixEnabled ? `helix-${helixStatus.mode}` : ""}`}>
-        <EditProvider createEditor={createEditor}>
-          <File
-            key={generation}
-            file={file}
-            options={fileOptions}
-            edit={editing}
-            editStateKey={`source:${moduleId}:${testFile ?? ""}:${generation}`}
-            editorOptions={editorOptions}
-            onEditChange={onEditChange}
-            onEditComplete={onEditComplete}
-          />
-        </EditProvider>
+      <div ref={editorFrameRef} className={`code-editor ${helixEnabled ? `helix-${helixStatus.mode}` : ""}`}>
+        <div className="code-content">
+          <VirtualizerContext.Provider value={virtualizer}>
+            <EditProvider createEditor={createEditor}>
+              <File
+                key={generation}
+                file={file}
+                options={fileOptions}
+                edit={editing}
+                editStateKey={`source:${moduleId}:${testFile ?? ""}:${generation}`}
+                editorOptions={editorOptions}
+                onEditChange={onEditChange}
+                onEditComplete={onEditComplete}
+              />
+            </EditProvider>
+          </VirtualizerContext.Provider>
+        </div>
         {helixEnabled && helixStatus.labels?.length > 0 && (
           <div className="helix-labels" aria-hidden="true">
             {helixStatus.labels.map(({ text, left, top, width, height, font }) => (
