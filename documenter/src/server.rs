@@ -986,10 +986,159 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
+    use proptest::strategy::Strategy as _;
     use tempfile::TempDir;
     use tower::ServiceExt;
 
     use super::*;
+
+    /// How the safety test's paths start: often aimed out of the workspace.
+    const REQUEST_STARTS: [&[&str]; 4] = [&[], &[".."], &["..", "out"], &["."]];
+
+    /// What the safety test puts in the workspace's sandbox, by path from it.
+    #[derive(Debug, Clone)]
+    enum SandboxEntry {
+        File,
+        Folder,
+        /// A symlink to a path from the sandbox (`absolute`) or from the link's folder.
+        Link(Vec<&'static str>, bool),
+    }
+
+    fn sandbox_entry()
+    -> impl proptest::strategy::Strategy<Value = (Vec<&'static str>, SandboxEntry)> {
+        use proptest::prelude::*;
+        let name = || prop::sample::select(&["a", "b", "c"][..]);
+        let place = (
+            prop::sample::select(&["root", "out"][..]),
+            prop::collection::vec(name(), 1..3),
+        )
+            .prop_map(|(top, rest)| std::iter::once(top).chain(rest).collect::<Vec<_>>());
+        // At most one `..` per link, so chains of links stay inside the temporary
+        // folder (see the test), and never empty: Linux cannot make such a link.
+        let relative = (
+            prop::option::of(Just("..")),
+            prop::collection::vec(
+                prop::sample::select(&["a", "b", "c", ".", "root", "out"][..]),
+                0..3,
+            ),
+        )
+            .prop_map(|(up, rest)| up.into_iter().chain(rest).collect::<Vec<_>>())
+            .prop_filter("a link has a target", |target| !target.is_empty());
+        let absolute = (
+            prop::sample::select(&["root", "out"][..]),
+            prop::collection::vec(name(), 0..3),
+        )
+            .prop_map(|(top, rest)| std::iter::once(top).chain(rest).collect::<Vec<_>>());
+        let entry = prop_oneof![
+            3 => Just(SandboxEntry::File),
+            3 => Just(SandboxEntry::Folder),
+            2 => relative.prop_map(|target| SandboxEntry::Link(target, false)),
+            1 => absolute.prop_map(|target| SandboxEntry::Link(target, true)),
+        ];
+        (place, entry)
+    }
+
+    proptest::proptest! {
+        /// The server uses a path only when the Lean oracle
+        /// (`server/oracle/Paths.lean`) says it is a file inside the workspace,
+        /// on real folders with symlinks in and out of it, loops included.
+        #[test]
+        #[cfg(unix)]
+        fn uses_only_paths_the_oracle_calls_safe(
+            entries in proptest::collection::vec(sandbox_entry(), 0..10),
+            requests in proptest::collection::vec(
+                (
+                    proptest::sample::select(&REQUEST_STARTS[..]),
+                    proptest::collection::vec(proptest::sample::select(&["a", "b", "c", ".", "..", "out", "root"][..]), 0..4),
+                )
+                    .prop_map(|(start, rest)| start.iter().copied().chain(rest).collect::<Vec<_>>()),
+                1..8,
+            ),
+        ) {
+            let temporary = tempfile::tempdir().unwrap();
+            // Deep enough that `..` cannot climb out of the temporary folder, where
+            // real folders the model does not know about are: a request has at
+            // most five components and each link one `..`, and links sit at least
+            // a folder inside the sandbox, so nothing gets above `s`.
+            let sandbox = temporary.path().canonicalize().unwrap().join("s/t/u/v");
+            let root = sandbox.join("root");
+            fs::create_dir_all(&root).unwrap();
+            fs::create_dir(sandbox.join("out")).unwrap();
+            // macOS's realpath reads `file/.` as the file; Linux refuses it.
+            let probe = sandbox.join("probe");
+            fs::write(&probe, "").unwrap();
+            let dots_after_file = probe.join(".").canonicalize().is_ok();
+            fs::remove_file(&probe).unwrap();
+            let components = |path: &Path| -> Vec<String> {
+                path.components()
+                    .filter_map(|component| match component {
+                        std::path::Component::Normal(name) => Some(name.to_string_lossy().into_owned()),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            let from_sandbox = |parts: &[&str]| -> Vec<String> {
+                components(&sandbox).into_iter().chain(parts.iter().map(|part| part.to_string())).collect()
+            };
+            let mut model = Vec::new();
+            for ancestor in sandbox.ancestors().filter(|ancestor| ancestor.parent().is_some()) {
+                model.push(serde_json::json!({ "path": components(ancestor), "kind": "folder" }));
+            }
+            for top in ["root", "out"] {
+                model.push(serde_json::json!({ "path": from_sandbox(&[top]), "kind": "folder" }));
+            }
+            // Shallow entries first, each only where its folder was made.
+            let mut entries = entries;
+            entries.sort_by_key(|(place, _)| place.len());
+            let mut made = std::collections::BTreeSet::new();
+            for (place, entry) in entries {
+                let path = place.iter().fold(sandbox.clone(), |path, part| path.join(part));
+                let folder_made = place.len() == 2 || made.contains(&place[..place.len() - 1]);
+                if !folder_made || std::fs::symlink_metadata(&path).is_ok() {
+                    continue;
+                }
+                let json = match &entry {
+                    SandboxEntry::File => {
+                        fs::write(&path, "").unwrap();
+                        serde_json::json!({ "path": from_sandbox(&place), "kind": "file" })
+                    }
+                    SandboxEntry::Folder => {
+                        fs::create_dir(&path).unwrap();
+                        made.insert(place.clone());
+                        serde_json::json!({ "path": from_sandbox(&place), "kind": "folder" })
+                    }
+                    SandboxEntry::Link(target, absolute) => {
+                        let real = if *absolute {
+                            target.iter().fold(sandbox.clone(), |path, part| path.join(part))
+                        } else {
+                            target.iter().collect::<PathBuf>()
+                        };
+                        std::os::unix::fs::symlink(&real, &path).unwrap();
+                        let target = if *absolute { from_sandbox(target) } else { target.iter().map(|part| part.to_string()).collect() };
+                        serde_json::json!({ "path": from_sandbox(&place), "kind": "link", "target": target, "absolute": absolute })
+                    }
+                };
+                model.push(json);
+            }
+            for request in requests {
+                let path = request.iter().fold(root.clone(), |path, part| path.join(part));
+                let query = serde_json::json!({
+                    "query": "safe",
+                    "dots_after_file": dots_after_file,
+                    "max_links": if cfg!(target_os = "macos") { 32 } else { 40 },
+                    "entries": model,
+                    "root": from_sandbox(&["root"]),
+                    "path": from_sandbox(&["root"]).into_iter().chain(request.iter().map(|part| part.to_string())).collect::<Vec<_>>(),
+                });
+                let Some(answer) = crate::lean_oracle::ask(&query) else { return Ok(()) };
+                proptest::prop_assert_eq!(
+                    ensure_safe_existing_file(&root, &path).is_ok(),
+                    answer["safe"].as_bool().unwrap(),
+                    "{}", path.display()
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn api_writes_notes_and_their_drawings_outside_the_workspace() {

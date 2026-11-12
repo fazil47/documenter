@@ -312,31 +312,38 @@ fn plain_string(text: &str) -> Option<String> {
     plain.then(|| inner.to_owned())
 }
 
-/// The module a relative import such as `./graph.js` or `./helix` names.
-/// TypeScript imports name `./b.ts` as `./b.js`, so a JavaScript extension
-/// also matches the TypeScript file.
+/// The module a relative import such as `./graph.js` or `./helix` names, as
+/// TypeScript resolves it: the TypeScript file a JavaScript extension stands
+/// for (`./b.js` for `b.ts`), the file as named, the name with each extension,
+/// then the folder's `index` file. An import ending in `/` names only an index.
 fn resolve(file: &Path, specifier: &str, ids: &BTreeMap<PathBuf, String>) -> Option<String> {
     if !specifier.starts_with("./") && !specifier.starts_with("../") {
         return None;
     }
     let base = normalize(&file.parent()?.join(specifier));
-    let mut candidates = vec![base.clone()];
-    for extension in EXTENSIONS {
-        let mut with_extension = base.clone().into_os_string();
-        with_extension.push(format!(".{extension}"));
-        candidates.push(PathBuf::from(with_extension));
-        candidates.push(base.join(format!("index.{extension}")));
+    let index_files = EXTENSIONS.map(|extension| base.join(format!("index.{extension}")));
+    let mut candidates = Vec::new();
+    if !specifier.ends_with('/') {
+        let typescript: &[&str] = match base.extension().and_then(|extension| extension.to_str()) {
+            Some("js") => &["ts", "tsx"],
+            Some("jsx") => &["tsx"],
+            Some("mjs") => &["mts"],
+            Some("cjs") => &["cts"],
+            _ => &[],
+        };
+        candidates.extend(
+            typescript
+                .iter()
+                .map(|extension| base.with_extension(extension)),
+        );
+        candidates.push(base.clone());
+        candidates.extend(EXTENSIONS.map(|extension| {
+            let mut with_extension = base.clone().into_os_string();
+            with_extension.push(format!(".{extension}"));
+            PathBuf::from(with_extension)
+        }));
     }
-    let javascript = base.extension().is_some_and(|extension| {
-        ["js", "jsx", "mjs", "cjs"]
-            .iter()
-            .any(|known| extension == *known)
-    });
-    if javascript {
-        for extension in ["ts", "tsx", "mts", "cts"] {
-            candidates.push(base.with_extension(extension));
-        }
-    }
+    candidates.extend(index_files);
     candidates
         .into_iter()
         .find_map(|candidate| ids.get(&candidate).cloned())
@@ -665,7 +672,103 @@ impl<'a> Visit<'a> for TestFinder<'_> {
 mod tests {
     use std::fs;
 
+    use proptest::prelude::*;
+    use serde_json::json;
+
     use super::*;
+
+    const FOLDERS: [&str; 3] = ["src", "src/lib", "src/lib/deep"];
+
+    fn module_file() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(&FOLDERS[..]),
+            prop::sample::select(&["a", "a", "index", "lib", "a.test", ".c"][..]),
+            prop::sample::select(&["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"][..]),
+        )
+            .prop_map(|(folder, name, extension)| format!("{folder}/{name}.{extension}"))
+    }
+
+    fn specifier() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(&["./", "../", "../../", "./../", "lib/", ""][..]),
+            prop::collection::vec(
+                prop::sample::select(&[".", "..", "lib", "deep", ""][..]),
+                0..3,
+            ),
+            prop::sample::select(&["a", "a", "index", "lib", "a.test", ".c", ""][..]),
+            prop::sample::select(
+                &["", ".js", ".js", ".ts", ".jsx", ".mjs", ".cjs", ".css", "/"][..],
+            ),
+        )
+            .prop_map(|(start, middle, name, end)| {
+                let middle: String = middle.iter().map(|part| format!("{part}/")).collect();
+                format!("{start}{middle}{name}{end}")
+            })
+    }
+
+    /// An import from `importer`'s folder aimed at `target`, a file under it,
+    /// written as `form` says: the file, its stem, its JavaScript name, or its folder.
+    fn import_of(importer: &str, target: &str, form: usize) -> String {
+        let (folder, name) = target.rsplit_once('/').unwrap();
+        let from: Vec<&str> = importer.split('/').collect();
+        let to: Vec<&str> = folder.split('/').collect();
+        let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+        let mut path = if common == from.len() {
+            "./".to_owned()
+        } else {
+            "../".repeat(from.len() - common)
+        };
+        for part in &to[common..] {
+            path.push_str(part);
+            path.push('/');
+        }
+        let stem = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+        match form {
+            0 => path + name,
+            1 => path + stem,
+            // The JavaScript name a TypeScript file is imported by.
+            2 => {
+                let javascript = match name.rsplit_once('.').map(|(_, extension)| extension) {
+                    Some("tsx") => "jsx",
+                    Some("mts") => "mjs",
+                    Some("cts") => "cjs",
+                    _ => "js",
+                };
+                format!("{path}{stem}.{javascript}")
+            }
+            _ if stem == "index" => path.trim_end_matches('/').to_owned(),
+            _ => path + stem + "/",
+        }
+    }
+
+    proptest! {
+        /// Relative imports name the module the Lean oracle
+        /// (`analysis/javascript/oracle/Imports.lean`) says they do.
+        #[test]
+        fn resolves_imports_as_the_oracle_does(
+            files in prop::collection::btree_set(module_file(), 1..8),
+            importer in prop::sample::select(&FOLDERS[..]),
+            aimed in (any::<prop::sample::Index>(), 0..4usize),
+            random in specifier(),
+            use_random in prop::bool::weighted(0.25),
+        ) {
+            let target = aimed.0.get(&files.iter().collect::<Vec<_>>()).as_str();
+            let specifier = if use_random { random } else { import_of(importer, target, aimed.1) };
+            let components = |path: &str| -> Vec<String> { path.split('/').map(str::to_owned).collect() };
+            let ids: BTreeMap<PathBuf, String> =
+                files.iter().map(|file| (Path::new("/w").join(file), file.clone())).collect();
+            let file = Path::new("/w").join(importer).join("x.js");
+            let query = json!({
+                "query": "resolve_import",
+                "file": components(&format!("w/{importer}/x.js")),
+                "specifier": specifier,
+                "modules": files.iter().map(|file| json!({ "path": components(&format!("w/{file}")), "id": file })).collect::<Vec<_>>(),
+            });
+            if let Some(answer) = crate::lean_oracle::ask(&query) {
+                prop_assert_eq!(resolve(&file, &specifier, &ids), answer["id"].as_str().map(str::to_owned));
+            }
+        }
+    }
 
     #[test]
     fn reads_packages_modules_imports_exports_and_tests() {

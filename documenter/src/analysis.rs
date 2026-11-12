@@ -4,8 +4,6 @@
 mod cargo;
 mod cfg;
 mod javascript;
-#[cfg(test)]
-mod lean_oracle;
 mod model;
 mod rust;
 mod settings;
@@ -333,7 +331,7 @@ mod tests {
             .iter()
             .map(|edge| json!([edge.source, edge.target]))
             .collect();
-        lean_oracle::ask(&query)
+        crate::lean_oracle::ask(&query)
     }
 
     /// The module id of `workspace` that `pick` chooses.

@@ -15,7 +15,7 @@ struct Driver {
 }
 
 /// The oracles' answer to `query`, or `None` when Lean is not installed.
-pub(super) fn ask(query: &Value) -> Option<Value> {
+pub(crate) fn ask(query: &Value) -> Option<Value> {
     static DRIVER: OnceLock<Option<Mutex<Driver>>> = OnceLock::new();
     let driver = DRIVER.get_or_init(start).as_ref()?;
     let mut driver = driver

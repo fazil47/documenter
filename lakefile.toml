@@ -1,16 +1,22 @@
 # Lean oracles: reference definitions of what parts of documenter mean, kept in
-# `oracle/` folders beside the Rust modules they describe. Module names follow
-# paths under `documenter/src`, e.g. `analysis.cfg.oracle.Cfg`. Add a glob for
-# each top-level module folder that holds oracles.
+# `oracle/` folders beside the modules they describe. Module names follow paths
+# under the library's source folder, e.g. `analysis.cfg.oracle.Cfg`. Add a glob
+# for each top-level module folder that holds oracles.
 name = "oracles"
 defaultTargets = ["oracle"]
 
 [[lean_lib]]
 name = "Oracles"
 srcDir = "documenter/src"
-globs = ["analysis.+"]
+globs = ["analysis.+", "notes.+", "server.+"]
 
-# Answers queries from the Rust differential tests, one JSON object per line.
+# Oracles for the web app's JavaScript modules.
+[[lean_lib]]
+name = "WebOracles"
+srcDir = "documenter/web/src"
+globs = ["helix.+"]
+
+# Answers queries from the Rust and web differential tests, one JSON object per line.
 [[lean_exe]]
 name = "oracle"
 srcDir = "oracle_driver"

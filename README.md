@@ -29,7 +29,8 @@ npm --prefix documenter/web run models
 npm --prefix documenter/web audit --omit=dev
 ```
 
-The Rust tests compare parts of the analysis with Lean oracles, which need
+The Rust and web tests compare parts of documenter with Lean oracles (the
+analysis, path safety, notes folder names, and Helix's change sets), which need
 [Lean](https://lean-lang.org) (`brew install elan-init`); `lake build` checks
 the oracles' proofs. Without Lake, those comparisons are skipped. The Quint
 tools come with `npm ci`.
@@ -118,13 +119,14 @@ JavaScript and TypeScript packages in the workspace are analysed too: each
 folder with a `package.json` (outside `node_modules`, `target`, `dist` and the
 like) is a package whose source files, under `src/` if it has one, are its
 modules, named after their paths (`index` files stand for their folder). Their
-edges are relative `import`s, `export … from`s and dynamic `import()`s; a file's
-leading comment is its documentation and its exports are its items. Tests in
-`*.test.*` and `*.spec.*` files belong to the module they are named after, or to
-their folder's. Each crate and package is its own box in the graph, labelled
-with its language; a dependency between them would be drawn module to module,
-across the boxes. Source pages edit JavaScript and TypeScript too, with the
-same Helix navigation and syntax-aware commands as Rust.
+edges are relative `import`s, `export … from`s and dynamic `import()`s, resolved
+as TypeScript resolves them; a file's leading comment is its documentation and
+its exports are its items. Tests in `*.test.*` and `*.spec.*` files belong to
+the module they are named after, or to their folder's. Each crate and package is
+its own box in the graph, labelled with its language; a dependency between them
+would be drawn module to module, across the boxes. Source pages edit JavaScript
+and TypeScript too, with the same Helix navigation and syntax-aware commands as
+Rust.
 
 Clicking a module in the graph focuses it: the camera moves to the module and
 everything it depends on, the rest fades, and a card shows the start of its
@@ -228,6 +230,6 @@ one seed deciding every delay and failure (`SIMULATION_SEEDS=2000` runs more),
 and `npm test` runs the page's `NoteSync` with fast-check's scheduler deciding
 the order of every request and reply. An oracle defines in Lean what a module's
 results mean, with proofs about them; `lakefile.toml` at the root builds them,
-and property tests compare the Rust code with them. A module's page lists each
-oracle with the oracles it imports, and a focused module's card in the graph
-links to them. Each file's leading comment is its summary.
+and property tests compare the code, Rust and JavaScript, with them. A module's
+page lists each oracle with the oracles it imports, and a focused module's card
+in the graph links to them. Each file's leading comment is its summary.

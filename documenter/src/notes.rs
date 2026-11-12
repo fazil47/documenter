@@ -266,6 +266,16 @@ mod tests {
             prop_assert_eq!(decoded, path);
         }
 
+        /// Folder names are what the Lean oracle (`notes/oracle/Notes.lean`)
+        /// defines, where encoding is proved to be undone by decoding.
+        #[test]
+        fn names_folders_as_the_oracle_does(path in "[a-zé/\\\\:?%\\- .]{0,16}") {
+            let query = serde_json::json!({ "query": "folder_name", "path": path });
+            if let Some(answer) = crate::lean_oracle::ask(&query) {
+                prop_assert_eq!(folder_name(Path::new(&path)), answer["name"].as_str().unwrap());
+            }
+        }
+
         /// Whatever is typed as a name, an accepted one is a single plain file
         /// name with the extension, so it cannot leave the module's folder, and
         /// accepting it again changes nothing.

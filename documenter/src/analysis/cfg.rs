@@ -147,7 +147,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::analysis::lean_oracle;
+    use crate::lean_oracle;
 
     const FLAGS: [&str; 3] = ["unix", "test", "debug_assertions"];
     const KEYS: [&str; 2] = ["target_os", "feature"];

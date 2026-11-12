@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c9dbe1ce56a062ea2c17e85790a30a9aa7860a967a602a2cbaa9dae30319c79a # shrinks to files = {"src/lib/deep/a.ts"}, importer = "src/lib/deep", specifier = "./../a"
+cc 9e1b797f75a2c222034a2988b36fb275aa530740ab5b5a22562558ce7d35ac4b # shrinks to files = {"src/a.mts"}, importer = "src", aimed = (Index(0), 2), random = "./a", use_random = false
+cc f0865c3ccb2e2a388ed2881edd03935514deb4641e938cf94d0cea4020db2824 # shrinks to files = {"src/lib/index.js"}, importer = "src", aimed = (Index(0), 3), random = "./a", use_random = false
+cc 77373adfbf0b7245cb81a9ddd347a1d412d2dec5e587b4af5964d16c3389636e # shrinks to files = {"src/a.mts", "src/lib/a.js"}, importer = "src", aimed = (Index(0), 2), random = "./a", use_random = false
+cc d94954c936afae4a65dbeb8ac1ae060f7373303de5c935cb7eb652312185aeee # shrinks to files = {"src/a.js"}, importer = "src", aimed = (Index(0), 0), random = "./a", use_random = false
