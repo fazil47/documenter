@@ -197,7 +197,6 @@ input:focus, textarea:focus { border-color: var(--focus); box-shadow: 0 0 0 3px 
   caret-color: transparent;
   /* A block on the character under the head, drawn behind the text. */
   --helix-caret-width: 1ch;
-  --helix-caret-shift: var(--helix-head-shift, 0 0);
   --helix-caret-layer: -5;
   --helix-caret-animation: none;
   --diffs-bg-caret-override: var(--caret);

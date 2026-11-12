@@ -227,8 +227,20 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
     };
 
     // Pierre also moves selections itself, on undo and with the mouse.
+    // The shift goes in a stylesheet of its own in Pierre's shadow root, as a
+    // rule for the carets alone: set on the container, a change would restyle
+    // every element of the file to reach them.
+    const caretSheet = new CSSStyleSheet();
+    let headShift;
     const syncCaret = () => {
-      if (latest.current.editor) container.style.setProperty("--helix-head-shift", caretShift(latest.current.editor));
+      const root = container.firstElementChild?.shadowRoot;
+      if (!latest.current.editor || !root) return;
+      if (!root.adoptedStyleSheets.includes(caretSheet)) root.adoptedStyleSheets = [...root.adoptedStyleSheets, caretSheet];
+      // Insert mode's bar sits where text goes, unshifted.
+      const shift = state.mode === "insert" ? "0 0" : caretShift(latest.current.editor);
+      if (shift === headShift) return;
+      headShift = shift;
+      caretSheet.replaceSync(`[data-caret] { --helix-caret-shift: ${shift}; }`);
     };
 
     const fail = (error) => setStatus((current) => ({ ...current, message: { text: error.message, error: true } }));
@@ -361,7 +373,8 @@ export default function useHelix({ editor, container, enabled, fileName, onComma
       container.removeEventListener("compositionstart", compositionstart, true);
       container.removeEventListener("compositionend", compositionend, true);
       container.removeEventListener("pointerup", pointerup, true);
-      container.style.removeProperty("--helix-head-shift");
+      const root = container.firstElementChild?.shadowRoot;
+      if (root) root.adoptedStyleSheets = root.adoptedStyleSheets.filter((sheet) => sheet !== caretSheet);
       engineActions.current = undefined;
     };
   }, [enabled, container]);

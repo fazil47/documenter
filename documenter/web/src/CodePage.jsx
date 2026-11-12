@@ -13,7 +13,8 @@ const fileOptions = {
   // Follows the system appearance, like the rest of the workspace UI.
   themeType: "system",
   preferredHighlighter: "shiki-js",
-  // Lets Helix mode turn Pierre's caret into a block cursor through inherited variables.
+  // Lets Helix mode turn Pierre's caret into a block cursor through inherited
+  // variables, and a shift that useHelix sets on the carets themselves.
   // Pierre's own rules are unlayered, so these layered overrides need !important.
   unsafeCSS: `[data-caret] {
     width: var(--helix-caret-width, 2px) !important;
