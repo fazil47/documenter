@@ -149,6 +149,8 @@ function graphStyle() {
         "background-opacity": 0.72,
         "border-color": color("--border-strong"),
         "border-width": 1,
+        // Not grabbable: pressing inside a box pans, as on the background.
+        events: "no",
       },
     },
     {
