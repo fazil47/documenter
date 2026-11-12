@@ -4,7 +4,7 @@ import elk from "cytoscape-elk";
 
 import { routes } from "./api.js";
 import LanguageIcon from "./LanguageIcon.jsx";
-import { graphElements, oracleElements, shownModule } from "./graph.js";
+import { graphElements, shownModule } from "./graph.js";
 
 cytoscape.use(elk);
 
@@ -46,11 +46,6 @@ function focusFromUrl() {
   return new URLSearchParams(window.location.search).get("focus");
 }
 
-// Which graph the page shows: the modules, or the Lean oracles (`?view=oracles`).
-function viewFromUrl() {
-  return new URLSearchParams(window.location.search).get("view") === "oracles" ? "oracles" : "modules";
-}
-
 // The first paragraph of a module's docs.
 function summary(docs) {
   return (docs || "").trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ").replaceAll("`", "");
@@ -75,7 +70,7 @@ function centeredView(graph, box, left = 0) {
 const fullView = (graph) => centeredView(graph, graph.elements().boundingBox());
 
 // What the focus card shows for a module: its docs and links to its oracles,
-// and those of modules folded into it.
+// and those of modules folded into it, on their modules' pages.
 function moduleCard(module, oracles) {
   if (!module) return null;
   return {
@@ -83,22 +78,11 @@ function moduleCard(module, oracles) {
     summary: summary(module.docs) || "No module documentation.",
     label: "Oracles:",
     links: oracles.filter((oracle) => oracle.shown === module.id).map((oracle) => ({
+      key: oracle.path,
       text: oracle.path.split("/").pop(),
-      href: routes.graph({ view: "oracles", focus: oracle.path }),
+      href: `${routes.module(oracle.owner)}#oracles`,
     })),
     inspect: routes.module(module.id),
-  };
-}
-
-// What the focus card shows for an oracle: its summary and the module it is beside.
-function oracleCard(oracle) {
-  if (!oracle) return null;
-  return {
-    title: oracle.path.split("/").pop(),
-    summary: oracle.summary.replaceAll("`", "") || "No summary.",
-    label: "Beside:",
-    links: [{ text: oracle.owner, href: routes.graph({ focus: oracle.shown }) }],
-    inspect: `${routes.module(oracle.owner)}#oracles`,
   };
 }
 
@@ -187,9 +171,8 @@ function graphStyle() {
   ];
 }
 
-// The module graph, or the oracle graph. Clicking a node focuses it: the camera
-// moves to it and what it depends on (or imports), everything else fades, and a
-// card shows its docs.
+// The module graph. Clicking a module focuses it: the camera moves to it and
+// what it depends on, everything else fades, and a card shows its docs.
 export default function GraphPage({ workspace }) {
   const containerRef = useRef(null);
   const graphRef = useRef(null);
@@ -199,11 +182,7 @@ export default function GraphPage({ workspace }) {
   // The graph whose initial layout has finished, so focus can be applied to it.
   const [readyGraph, setReadyGraph] = useState(null);
   const [focus, setFocus] = useState(focusFromUrl);
-  const [view, setView] = useState(viewFromUrl);
-  const elements = useMemo(
-    () => (view === "oracles" ? oracleElements(workspace) : graphElements(workspace)),
-    [workspace, view],
-  );
+  const elements = useMemo(() => graphElements(workspace), [workspace]);
   const boxes = useMemo(() => elements.filter((element) => element.data.box).map((element) => element.data), [elements]);
   // Every oracle, with the module it sits beside and the module node showing that one.
   const oracles = useMemo(() => workspace.modules.flatMap((module) => module.oracles.map((oracle) => ({
@@ -212,12 +191,10 @@ export default function GraphPage({ workspace }) {
     shown: shownModule(workspace, module.id),
   }))), [workspace]);
   // A folded module has no node of its own, so its focus goes to the node showing it.
-  const focused = focus && view === "modules" ? shownModule(workspace, focus) : focus;
-  const card = view === "oracles"
-    ? oracleCard(oracles.find((oracle) => oracle.path === focused))
-    : moduleCard(workspace.modules.find((module) => module.id === focused), oracles);
+  const focused = focus && shownModule(workspace, focus);
+  const card = moduleCard(workspace.modules.find((module) => module.id === focused), oracles);
 
-  // Focus and view changes are browser history entries, so back steps out of them.
+  // Focus changes are browser history entries, so back steps out of them.
   const focusOn = useCallback((id) => {
     const url = new URL(window.location.href);
     if (id) url.searchParams.set("focus", id);
@@ -226,18 +203,14 @@ export default function GraphPage({ workspace }) {
     setFocus(id);
   }, []);
 
-  function showView(next) {
-    if (next === view) return;
-    window.history.pushState(null, "", routes.graph({ view: next === "oracles" ? next : "" }));
-    setFocus(null);
-    setView(next);
-  }
-
   useEffect(() => {
-    const restore = () => {
-      setFocus(focusFromUrl());
-      setView(viewFromUrl());
-    };
+    // Links from before the Oracles view was removed name it; forget it.
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("view")) {
+      url.searchParams.delete("view");
+      window.history.replaceState(window.history.state, "", url);
+    }
+    const restore = () => setFocus(focusFromUrl());
     window.addEventListener("popstate", restore);
     return () => window.removeEventListener("popstate", restore);
   }, []);
@@ -282,7 +255,6 @@ export default function GraphPage({ workspace }) {
         label.style.transform = `translate(${bounds.x1}px, ${bounds.y1}px) scale(${graph.zoom()}) translateY(calc(-100% - 8px))`;
       }
     });
-    graph.scratch("view", view);
     graphRef.current = graph;
     // Hidden until laid out and focused, so the unarranged graph never shows.
     containerRef.current.style.visibility = "hidden";
@@ -300,13 +272,13 @@ export default function GraphPage({ workspace }) {
       graphRef.current = null;
       graph.destroy();
     };
-  }, [elements, view, focusOn]);
+  }, [elements, focusOn]);
 
   // Before paint, so a page opened already focused never shows the full graph.
   useLayoutEffect(() => {
     const graph = graphRef.current;
-    // A view change replaces the graph, so the old one is left alone.
-    if (!graph || readyGraph !== graph || graph.scratch("view") !== view) return;
+    // Until a new graph's first layout finishes, focus waits for it.
+    if (!graph || readyGraph !== graph) return;
     // The first focus on a new graph is where the page opens, so it is not animated.
     const animate = graph.scratch("shown") === true;
     graph.scratch("shown", true);
@@ -326,7 +298,7 @@ export default function GraphPage({ workspace }) {
     const camera = node.empty() ? fullView(graph) : centeredView(graph, kept.nodes().boundingBox(), inset);
     if (animate) graph.animate(camera, cameraMove);
     else graph.viewport(camera);
-  }, [focused, readyGraph, view]);
+  }, [focused, readyGraph]);
 
   function search(event) {
     event.preventDefault();
@@ -356,19 +328,13 @@ export default function GraphPage({ workspace }) {
     <main className="graph-page">
       <header className="topbar graph-toolbar">
         <a className="brand" href={routes.graph()}>documenter</a>
-        {oracles.length > 0 && (
-          <div className="mode-toggle" role="group" aria-label="Graph">
-            <button className={view === "modules" ? "active" : ""} type="button" onClick={() => showView("modules")}>Modules</button>
-            <button className={view === "oracles" ? "active" : ""} type="button" onClick={() => showView("oracles")}>Oracles</button>
-          </div>
-        )}
         <form className="graph-search" onSubmit={search}>
-          <label className="sr-only" htmlFor="module-search">{view === "oracles" ? "Find oracle" : "Find module"}</label>
+          <label className="sr-only" htmlFor="module-search">Find module</label>
           <input
             id="module-search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={view === "oracles" ? "Find an oracle…" : "Find a module…"}
+            placeholder="Find a module…"
           />
         </form>
         <button type="button" onClick={() => (focus ? focusOn(null) : graphRef.current?.animate(fullView(graphRef.current), cameraMove))}>Fit</button>
@@ -378,7 +344,7 @@ export default function GraphPage({ workspace }) {
         <div className="warning-strip">{workspace.warnings.length} analysis warning(s)</div>
       )}
       <div className="graph-stage">
-        <div className="graph-canvas" ref={containerRef} aria-label={view === "oracles" ? "Oracle import graph" : "Module dependency graph"} />
+        <div className="graph-canvas" ref={containerRef} aria-label="Module dependency graph" />
         {boxes.map((box) => (
           <div
             key={box.id}
@@ -401,7 +367,7 @@ export default function GraphPage({ workspace }) {
               <div className="focus-links">
                 {card.label}{" "}
                 {card.links.map((link, index) => (
-                  <span key={link.href}>
+                  <span key={link.key}>
                     {index > 0 && ", "}
                     <a href={link.href}>{link.text}</a>
                   </span>

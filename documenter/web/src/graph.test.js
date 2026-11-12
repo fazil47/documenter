@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { graphElements, oracleElements } from "./graph.js";
+import { graphElements } from "./graph.js";
 
 describe("graphElements", () => {
   it("contracts folded modules into their nearest visible parents", () => {
@@ -118,20 +118,3 @@ function module(id, folded) {
 function edge(source, target) {
   return { source, target };
 }
-
-describe("oracleElements", () => {
-  it("boxes oracles by their module and links their imports", () => {
-    const elements = oracleElements({
-      modules: [
-        { id: "c", oracles: [] },
-        { id: "c::query", oracles: [{ path: "src/query/oracle/Query.lean", imports: ["src/query/oracle/Graph.lean"] }, { path: "src/query/oracle/Graph.lean", imports: [] }] },
-      ],
-    });
-    expect(elements.map((element) => element.data)).toEqual([
-      { id: "__module__c::query", label: "c::query", box: true },
-      { id: "src/query/oracle/Query.lean", item: "src/query/oracle/Query.lean", label: "Query.lean", parent: "__module__c::query" },
-      { id: "src/query/oracle/Graph.lean", item: "src/query/oracle/Graph.lean", label: "Graph.lean", parent: "__module__c::query" },
-      { id: "src/query/oracle/Query.lean -> src/query/oracle/Graph.lean", source: "src/query/oracle/Query.lean", target: "src/query/oracle/Graph.lean" },
-    ]);
-  });
-});

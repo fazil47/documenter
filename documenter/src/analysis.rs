@@ -434,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn links_modules_referred_to_by_paths_in_code() {
+    fn links_modules_referred_to_by_paths_in_active_code() {
         let temp = tempdir().unwrap();
         fs::write(
             temp.path().join("Cargo.toml"),
@@ -446,7 +446,13 @@ mod tests {
             temp.path().join("src/lib.rs"),
             "mod engine;\nmod frame;\nmod unused;\n\
              fn start() -> Option<frame::Frame> { engine::run(); None }\n\
-             #[cfg(any())]\nfn disabled() { unused::f(); }\n",
+             #[cfg(any())]\nfn disabled() { unused::f(); }\n\
+             enum Kind { On, #[cfg(test)] Off(unused::T) }\n\
+             struct Holder { #[cfg(test)] off: unused::T }\n\
+             impl Holder { #[cfg(test)] fn off() { unused::f(); } }\n\
+             fn body() { #[cfg(test)] let _ = unused::f(); #[cfg(test)] unused::f(); #[cfg(test)] { unused::f(); } }\n\
+             trait Check { #[cfg(test)] fn check() { unused::f(); } }\n\
+             fn argument(#[cfg(test)] _x: unused::T) {}\n",
         )
         .unwrap();
         fs::write(

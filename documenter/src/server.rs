@@ -8,9 +8,7 @@ mod storage;
 mod watch;
 
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
-use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -33,7 +31,7 @@ use uuid::Uuid;
 
 use self::language_server::{LanguageServers, NavigationError, NavigationKind, ServerStatus};
 use self::settings::{Settings, Store as SettingsStore};
-use self::storage::{ReplaceError, Storage, atomic_write};
+use self::storage::{ReplaceError, Storage, atomic_write, content_revision};
 use self::watch::{Change, WorkspaceWatcher};
 use crate::analysis::Workspace;
 use crate::drawing::{
@@ -843,12 +841,6 @@ fn validate_title(title: &str) -> ApiResult<String> {
     Ok(title.to_owned())
 }
 
-fn content_revision(content: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
-}
-
 fn ensure_safe_existing_file(root: &Path, path: &Path) -> ApiResult<()> {
     let root = root
         .canonicalize()
@@ -998,12 +990,6 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-
-    #[test]
-    fn content_revisions_change_with_content() {
-        assert_ne!(content_revision("one"), content_revision("two"));
-        assert_eq!(content_revision("one"), content_revision("one"));
-    }
 
     #[tokio::test]
     async fn api_writes_notes_and_their_drawings_outside_the_workspace() {

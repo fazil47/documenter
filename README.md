@@ -226,10 +226,8 @@ deterministically, checking the same invariants on real code: `cargo test` runs
 note pages and an outside editor against the real server on a simulated disk,
 one seed deciding every delay and failure (`SIMULATION_SEEDS=2000` runs more),
 and `npm test` runs the page's `NoteSync` with fast-check's scheduler deciding
-the order of every request and reply. An oracle defines in Lean what
-a module's results mean, with proofs about them; `lakefile.toml` at the root
-builds them, and property tests compare the Rust code with them. Oracles import
-each other: the graph page's **Oracles** view shows them, boxed by the module
-they sit beside, with an arrow for each import, and focuses an oracle on click
-like the module graph does. A focused module's card links to its oracles. Each
-file's leading comment is its summary.
+the order of every request and reply. An oracle defines in Lean what a module's
+results mean, with proofs about them; `lakefile.toml` at the root builds them,
+and property tests compare the Rust code with them. A module's page lists each
+oracle with the oracles it imports, and a focused module's card in the graph
+links to them. Each file's leading comment is its summary.

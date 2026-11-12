@@ -1,5 +1,7 @@
 //! Reading and atomically replacing the files the server saves.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::Path;
 
@@ -17,6 +19,14 @@ enum Kind {
     Disk,
     #[cfg(test)]
     Simulated(std::sync::Arc<super::simulation::Disk>),
+}
+
+/// A short fingerprint of a file's contents, which a save names to say which
+/// version it replaces.
+pub(super) fn content_revision(content: &str) -> String {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Why a conditional replacement did not happen.
@@ -67,7 +77,7 @@ impl Storage {
         match &self.kind {
             Kind::Disk => {
                 let current = std::fs::read_to_string(path).map_err(ReplaceError::Read)?;
-                if super::content_revision(&current) != revision {
+                if content_revision(&current) != revision {
                     return Err(ReplaceError::Changed);
                 }
                 atomic_write(path, contents).map_err(ReplaceError::Write)
@@ -93,6 +103,12 @@ pub(super) fn atomic_write(path: &Path, contents: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_revisions_change_with_content() {
+        assert_ne!(content_revision("one"), content_revision("two"));
+        assert_eq!(content_revision("one"), content_revision("one"));
+    }
 
     #[test]
     fn atomically_creates_and_replaces_files_without_leaving_temporaries() {

@@ -50,23 +50,3 @@ export function graphElements(workspace) {
   });
   return [...parents, ...modules, ...edges];
 }
-
-// The oracle graph: every Lean oracle, boxed by the module it sits beside, with
-// an edge for each import. An oracle's id and item are its path.
-export function oracleElements(workspace) {
-  const groups = [];
-  const oracles = [];
-  const edges = [];
-  for (const module of workspace.modules) {
-    if (module.oracles.length === 0) continue;
-    const parent = `__module__${module.id}`;
-    groups.push({ data: { id: parent, label: module.id, box: true } });
-    for (const oracle of module.oracles) {
-      oracles.push({ data: { id: oracle.path, item: oracle.path, label: oracle.path.split("/").pop(), parent } });
-      for (const imported of oracle.imports) {
-        edges.push({ data: { id: `${oracle.path} -> ${imported}`, source: oracle.path, target: imported } });
-      }
-    }
-  }
-  return [...groups, ...oracles, ...edges];
-}

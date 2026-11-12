@@ -25,9 +25,10 @@ use tower::ServiceExt;
 
 use super::language_server::LanguageServers;
 use super::settings::Store as SettingsStore;
+use super::storage::content_revision;
 use super::storage::{ReplaceError, Storage, atomic_write};
 use super::watch::{Change, debounce};
-use super::{AppState, ModelState, content_revision, follow_changes, router};
+use super::{AppState, ModelState, follow_changes, router};
 use crate::analysis::Workspace;
 use crate::notes::Notes;
 

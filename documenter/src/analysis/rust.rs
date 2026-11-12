@@ -5,9 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use syn::visit::{self, Visit};
-use syn::{
-    Attribute, Expr, ImplItem, Item, ItemMod, ItemUse, Lit, Meta, Type, UseTree, Visibility,
-};
+use syn::{Attribute, Expr, ImplItem, Item, ItemMod, Lit, Meta, Type, UseTree, Visibility};
 
 use super::cargo::Package;
 use super::cfg::{self, CfgSet};
@@ -547,29 +545,29 @@ fn visibility_text(visibility: &Visibility) -> Option<String> {
 
 // The paths a module's items refer to other modules by: its `use`
 // declarations and paths such as `child::run()` or `crate::a::B` in its code.
-// Nested modules are walked on their own.
+// Nested modules are walked on their own, and code `#[cfg]` turns off, such as
+// a `#[cfg(test)]` method or variant, is left out.
 fn collect_references(items: &[Item], cfg: &CfgSet) -> Vec<Vec<String>> {
-    let mut paths = CodePaths(Vec::new());
+    let mut paths = CodePaths {
+        paths: Vec::new(),
+        cfg,
+    };
     for item in items {
-        if !cfg::active(cfg, item_attrs(item)) {
-            continue;
-        }
-        if let Item::Use(item) = item {
-            expand_use_tree(&item.tree, Vec::new(), &mut paths.0);
-        } else {
-            paths.visit_item(item);
-        }
+        paths.visit_item(item);
     }
-    paths.0
+    paths.paths
 }
 
-// Multi-segment paths in code; single segments cannot name another module.
-struct CodePaths(Vec<Vec<String>>);
+// Multi-segment paths in active code; single segments cannot name another module.
+struct CodePaths<'cfg> {
+    paths: Vec<Vec<String>>,
+    cfg: &'cfg CfgSet,
+}
 
-impl<'ast> Visit<'ast> for CodePaths {
+impl<'ast> Visit<'ast> for CodePaths<'_> {
     fn visit_path(&mut self, path: &'ast syn::Path) {
         if path.segments.len() > 1 {
-            self.0.push(
+            self.paths.push(
                 path.segments
                     .iter()
                     .map(|segment| segment.ident.to_string())
@@ -579,9 +577,153 @@ impl<'ast> Visit<'ast> for CodePaths {
         visit::visit_path(self, path);
     }
 
-    fn visit_item_mod(&mut self, _: &'ast ItemMod) {}
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !cfg::active(self.cfg, item_attrs(item)) {
+            return;
+        }
+        match item {
+            Item::Mod(_) => {}
+            Item::Use(item) => expand_use_tree(&item.tree, Vec::new(), &mut self.paths),
+            _ => visit::visit_item(self, item),
+        }
+    }
 
-    fn visit_item_use(&mut self, _: &'ast ItemUse) {}
+    fn visit_impl_item(&mut self, item: &'ast ImplItem) {
+        let attrs = match item {
+            ImplItem::Const(item) => &item.attrs,
+            ImplItem::Fn(item) => &item.attrs,
+            ImplItem::Type(item) => &item.attrs,
+            ImplItem::Macro(item) => &item.attrs,
+            _ => return visit::visit_impl_item(self, item),
+        };
+        if cfg::active(self.cfg, attrs) {
+            visit::visit_impl_item(self, item);
+        }
+    }
+
+    fn visit_variant(&mut self, variant: &'ast syn::Variant) {
+        if cfg::active(self.cfg, &variant.attrs) {
+            visit::visit_variant(self, variant);
+        }
+    }
+
+    fn visit_field(&mut self, field: &'ast syn::Field) {
+        if cfg::active(self.cfg, &field.attrs) {
+            visit::visit_field(self, field);
+        }
+    }
+
+    fn visit_field_value(&mut self, field: &'ast syn::FieldValue) {
+        if cfg::active(self.cfg, &field.attrs) {
+            visit::visit_field_value(self, field);
+        }
+    }
+
+    fn visit_arm(&mut self, arm: &'ast syn::Arm) {
+        if cfg::active(self.cfg, &arm.attrs) {
+            visit::visit_arm(self, arm);
+        }
+    }
+
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        if cfg::active(self.cfg, &local.attrs) {
+            visit::visit_local(self, local);
+        }
+    }
+
+    fn visit_stmt_macro(&mut self, statement: &'ast syn::StmtMacro) {
+        if cfg::active(self.cfg, &statement.attrs) {
+            visit::visit_stmt_macro(self, statement);
+        }
+    }
+
+    // Such as `#[cfg(test)] check();` or a `#[cfg(test)] { .. }` block.
+    fn visit_expr(&mut self, expr: &'ast Expr) {
+        if cfg::active(self.cfg, expr_attrs(expr)) {
+            visit::visit_expr(self, expr);
+        }
+    }
+
+    fn visit_trait_item(&mut self, item: &'ast syn::TraitItem) {
+        let attrs = match item {
+            syn::TraitItem::Const(item) => &item.attrs,
+            syn::TraitItem::Fn(item) => &item.attrs,
+            syn::TraitItem::Type(item) => &item.attrs,
+            syn::TraitItem::Macro(item) => &item.attrs,
+            _ => return visit::visit_trait_item(self, item),
+        };
+        if cfg::active(self.cfg, attrs) {
+            visit::visit_trait_item(self, item);
+        }
+    }
+
+    fn visit_foreign_item(&mut self, item: &'ast syn::ForeignItem) {
+        let attrs = match item {
+            syn::ForeignItem::Fn(item) => &item.attrs,
+            syn::ForeignItem::Static(item) => &item.attrs,
+            syn::ForeignItem::Type(item) => &item.attrs,
+            syn::ForeignItem::Macro(item) => &item.attrs,
+            _ => return visit::visit_foreign_item(self, item),
+        };
+        if cfg::active(self.cfg, attrs) {
+            visit::visit_foreign_item(self, item);
+        }
+    }
+
+    fn visit_fn_arg(&mut self, argument: &'ast syn::FnArg) {
+        let attrs = match argument {
+            syn::FnArg::Receiver(receiver) => &receiver.attrs,
+            syn::FnArg::Typed(typed) => &typed.attrs,
+        };
+        if cfg::active(self.cfg, attrs) {
+            visit::visit_fn_arg(self, argument);
+        }
+    }
+}
+
+fn expr_attrs(expr: &Expr) -> &[Attribute] {
+    match expr {
+        Expr::Array(expr) => &expr.attrs,
+        Expr::Assign(expr) => &expr.attrs,
+        Expr::Async(expr) => &expr.attrs,
+        Expr::Await(expr) => &expr.attrs,
+        Expr::Binary(expr) => &expr.attrs,
+        Expr::Block(expr) => &expr.attrs,
+        Expr::Break(expr) => &expr.attrs,
+        Expr::Call(expr) => &expr.attrs,
+        Expr::Cast(expr) => &expr.attrs,
+        Expr::Closure(expr) => &expr.attrs,
+        Expr::Const(expr) => &expr.attrs,
+        Expr::Continue(expr) => &expr.attrs,
+        Expr::Field(expr) => &expr.attrs,
+        Expr::ForLoop(expr) => &expr.attrs,
+        Expr::Group(expr) => &expr.attrs,
+        Expr::If(expr) => &expr.attrs,
+        Expr::Index(expr) => &expr.attrs,
+        Expr::Infer(expr) => &expr.attrs,
+        Expr::Let(expr) => &expr.attrs,
+        Expr::Lit(expr) => &expr.attrs,
+        Expr::Loop(expr) => &expr.attrs,
+        Expr::Macro(expr) => &expr.attrs,
+        Expr::Match(expr) => &expr.attrs,
+        Expr::MethodCall(expr) => &expr.attrs,
+        Expr::Paren(expr) => &expr.attrs,
+        Expr::Path(expr) => &expr.attrs,
+        Expr::Range(expr) => &expr.attrs,
+        Expr::RawAddr(expr) => &expr.attrs,
+        Expr::Reference(expr) => &expr.attrs,
+        Expr::Repeat(expr) => &expr.attrs,
+        Expr::Return(expr) => &expr.attrs,
+        Expr::Struct(expr) => &expr.attrs,
+        Expr::Try(expr) => &expr.attrs,
+        Expr::TryBlock(expr) => &expr.attrs,
+        Expr::Tuple(expr) => &expr.attrs,
+        Expr::Unary(expr) => &expr.attrs,
+        Expr::Unsafe(expr) => &expr.attrs,
+        Expr::While(expr) => &expr.attrs,
+        Expr::Yield(expr) => &expr.attrs,
+        _ => &[],
+    }
 }
 
 fn item_attrs(item: &Item) -> &[Attribute] {
