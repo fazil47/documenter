@@ -381,6 +381,15 @@ describe("language server navigation", () => {
     expect(session.keys("<C-o>").state).toBe("one\ntw⟨o⟩\nthree\n");
   });
 
+  it("goes to the view's top, middle, and bottom inside the scroll margin, as Helix does", () => {
+    // The test view shows lines 0 to 100.
+    const text = Array.from({ length: 120 }, (_, line) => `l${line}`).join("\n");
+    expect(editor(`⟨l⟩0\n${text.slice(3)}`).keys("gt").state.split("\n").findIndex((line) => line.includes("⟨"))).toBe(5);
+    expect(editor(`⟨l⟩0\n${text.slice(3)}`).keys("3gt").state.split("\n").findIndex((line) => line.includes("⟨"))).toBe(7);
+    expect(editor(`⟨l⟩0\n${text.slice(3)}`).keys("gb").state.split("\n").findIndex((line) => line.includes("⟨"))).toBe(95);
+    expect(editor(`⟨l⟩0\n${text.slice(3)}`).keys("gc").state.split("\n").findIndex((line) => line.includes("⟨"))).toBe(50);
+  });
+
   it("centres goto targets, and jump-list targets and search matches when hidden, as Helix does", () => {
     const helix = new Engine();
     const text = "one\ntwo\nthree\n";

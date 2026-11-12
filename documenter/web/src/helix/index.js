@@ -2,6 +2,7 @@
 
 import { Engine } from "./state.js";
 
+export { SCROLLOFF } from "./commands.js";
 export { keyFromEvent } from "./keys.js";
 export { loadSyntax } from "./syntax.js";
 

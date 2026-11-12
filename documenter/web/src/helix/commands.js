@@ -755,6 +755,12 @@ function scrollTo(align) {
 
 const scrollBy = (direction) => (cx) => cx.command({ type: "scrollBy", lines: direction * cx.count });
 
+// Helix's default `scrolloff`: the cursor keeps this many lines of context
+// between it and the top or bottom of the view.
+export const SCROLLOFF = 5;
+
+// Helix `gt`, `gc`, `gb`: like Helix's goto_window, top and bottom stay
+// `SCROLLOFF` lines inside the view, so going there does not scroll it.
 function windowLine(position) {
   return (cx) => {
     const visible = cx.state.visibleLines;
@@ -762,12 +768,13 @@ function windowLine(position) {
       cx.message("the visible lines are unknown", true);
       return;
     }
+    const margin = Math.min(SCROLLOFF, Math.floor((visible.last - visible.first) / 2));
     const line = position === "top"
-      ? visible.first + cx.count - 1
+      ? visible.first + margin + cx.count - 1
       : position === "bottom"
-        ? visible.last - cx.count + 1
+        ? visible.last - margin - cx.count + 1
         : Math.floor((visible.first + visible.last) / 2);
-    const target = Math.min(Math.max(line, visible.first), visible.last);
+    const target = Math.min(Math.max(line, visible.first + margin), visible.last - margin);
     cx.move((range) => putCursor(cx.text, range, cx.text.firstNonBlank(target), cx.extend));
   };
 }

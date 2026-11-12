@@ -6,7 +6,7 @@ import rustWasm from "tree-sitter-rust/tree-sitter-rust.wasm?url";
 import tsxWasm from "tree-sitter-typescript/tree-sitter-tsx.wasm?url";
 import typescriptWasm from "tree-sitter-typescript/tree-sitter-typescript.wasm?url";
 
-import { HelixState, keyFromEvent, loadSyntax } from "./helix/index.js";
+import { HelixState, keyFromEvent, loadSyntax, SCROLLOFF } from "./helix/index.js";
 import ecmaObjects from "./helix/ecma_textobjects.scm?raw";
 import rustObjects from "./helix/rust_textobjects.scm?raw";
 import typescriptObjects from "./helix/typescript_textobjects.scm?raw";
@@ -147,8 +147,9 @@ function loadGrammar(key) {
 
 // Scrolls `container` vertically only, so the line lands where `block` says, as
 // `scrollIntoView` would; that would also scroll the code sideways to the
-// line's start, undoing the reader's horizontal scroll. `centerIfHidden`
-// centres a line that is not fully in view.
+// line's start, undoing the reader's horizontal scroll. `nearest` keeps
+// `SCROLLOFF` lines around the line, and `centerIfHidden` centres a line that
+// is not fully in view.
 function scrollToLine(container, line, block) {
   // The first line also reveals the file header above it.
   if (line === 0 && block !== "end") {
@@ -160,11 +161,13 @@ function scrollToLine(container, line, block) {
   const top = geometry.top(line) - container.getBoundingClientRect().top - container.clientTop;
   const room = container.clientHeight - geometry.height;
   const hidden = top < 0 || top > room;
+  // Half the view at most, so a short view still centres rather than jumps.
+  const margin = Math.min(SCROLLOFF * geometry.height, room / 2);
   const shift = {
     start: top,
     center: top - room / 2,
     end: top - room,
-    nearest: top < 0 ? top : Math.max(0, top - room),
+    nearest: top < margin ? top - margin : Math.max(0, top - (room - margin)),
     centerIfHidden: hidden ? top - room / 2 : 0,
   }[block];
   if (shift) container.scrollBy({ top: shift });
